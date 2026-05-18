@@ -1,0 +1,4 @@
+node_modules/
+*.wav
+/tmp/
+voice-bridge-debug.log
