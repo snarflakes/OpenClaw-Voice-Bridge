@@ -329,18 +329,34 @@ export default definePluginEntry({
                   console.error(`[openclaw-voice-bridge] runHeartbeatOnce called`);
                 } catch (_e) {}
 
-                // Also try gateway HTTP wake endpoint
+                // Use the official /hooks/wake endpoint to trigger immediate agent wake
                 try {
                   const http = await import('http');
-                  http.get('http://localhost:18789/api/heartbeat/trigger?sessionKey=' + encodeURIComponent(sessionKey) + '&reason=voice-input', (res: any) => {
+                  const wakePayload = JSON.stringify({ mode: "now" });
+                  const wakeReq = http.request({
+                    hostname: 'localhost',
+                    port: 18789,
+                    path: '/hooks/wake',
+                    method: 'POST',
+                    headers: {
+                      'Authorization': 'Bearer voicebridge-local-hooks-secret',
+                      'Content-Type': 'application/json',
+                      'Content-Length': Buffer.byteLength(wakePayload),
+                    },
+                  }, (res: any) => {
                     let body = '';
                     res.on('data', (chunk: any) => body += chunk);
                     res.on('end', () => {
-                      console.error(`[openclaw-voice-bridge] HTTP wake response: ${res.statusCode} ${body.slice(0, 100)}`);
+                      console.error(`[openclaw-voice-bridge] /hooks/wake response: ${res.statusCode} ${body.slice(0, 100)}`);
+                      try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} /hooks/wake response: ${res.statusCode} ${body.slice(0, 100)}\n`); } catch(_e) {}
                     });
-                  }).on('error', (e: any) => {
-                    console.error(`[openclaw-voice-bridge] HTTP wake error: ${e.message}`);
                   });
+                  wakeReq.on('error', (e: any) => {
+                    console.error(`[openclaw-voice-voice-bridge] /hooks/wake error: ${e.message}`);
+                    try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} /hooks/wake error: ${e.message}\n`); } catch(_e) {}
+                  });
+                  wakeReq.write(wakePayload);
+                  wakeReq.end();
                 } catch (_e) {}
               } catch (err: any) {
                 console.error(`[openclaw-voice-bridge] Wake error: ${err?.message || err}`);
