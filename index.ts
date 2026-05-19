@@ -258,13 +258,7 @@ export default definePluginEntry({
               console.error(`[openclaw-voice-bridge] Injecting transcript via TaskFlow wake`);
 
               try {
-                // Enqueue the system event FIRST so it's in the queue when the agent wakes
-                if (api.runtime?.system?.enqueueSystemEvent) {
-                  api.runtime.system.enqueueSystemEvent(voiceText, { sessionKey });
-                  console.error(`[openclaw-voice-bridge] Enqueued system event`);
-                  try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Enqueued: ${voiceText}\n`); } catch(_e) {}
-                }
-
+                // /hooks/wake handles enqueueSystemEvent internally, so we don't call it separately.
                 // Try TaskFlow-based wake (createManaged → setWaiting → resume → finish)
                 // This works when the agent is already active and waiting on a TaskFlow.
                 // When agent is idle, we still try it + runtime wake APIs.
@@ -329,10 +323,10 @@ export default definePluginEntry({
                   console.error(`[openclaw-voice-bridge] runHeartbeatOnce called`);
                 } catch (_e) {}
 
-                // Use the official /hooks/wake endpoint to trigger immediate agent wake
+                // Use the official /hooks/wake endpoint — this enqueues the system event AND wakes the agent
                 try {
                   const http = await import('http');
-                  const wakePayload = JSON.stringify({ mode: "now" });
+                  const wakePayload = JSON.stringify({ text: voiceText, mode: "now" });
                   const wakeReq = http.request({
                     hostname: 'localhost',
                     port: 18789,
@@ -360,12 +354,6 @@ export default definePluginEntry({
                 } catch (_e) {}
               } catch (err: any) {
                 console.error(`[openclaw-voice-bridge] Wake error: ${err?.message || err}`);
-                // Fallback: enqueue system event (if not already done)
-                try {
-                  if (api.runtime?.system?.enqueueSystemEvent) {
-                    api.runtime.system.enqueueSystemEvent(voiceText, { sessionKey });
-                  }
-                } catch (_e) {}
               }
               // Go back to sleeping (don't await - let CLI run async)
               setSnarlingState("sleeping").catch(() => {});
