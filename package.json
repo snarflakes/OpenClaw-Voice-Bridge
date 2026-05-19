@@ -1,8 +1,8 @@
 {
   "name": "openclaw-voice-bridge",
   "version": "1.0.0",
-  "description": "Push-to-talk voice input for OpenClaw — record from USB mic, transcribe via Whisper, and inject transcript into agent session",
-  "main": "index.ts",
+  "description": "Record audio from USB mic on B button press, transcribe via gpt-4o-mini-transcribe, and inject transcript as user message",
+  "main": "index.mjs",
   "type": "module",
   "dependencies": {},
   "peerDependencies": {
@@ -10,7 +10,7 @@
   },
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./index.mjs"
     ],
     "compat": {
       "pluginApi": ">=2026.3.24-beta.2",

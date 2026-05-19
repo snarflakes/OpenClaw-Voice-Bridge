@@ -3,6 +3,9 @@
   "name": "OpenClaw Voice Bridge",
   "description": "Push-to-talk voice input via snarling B button and USB mic. Records audio, transcribes via Whisper, and injects the transcript into the agent session.",
   "envVars": ["OPENAI_API_KEY"],
+  "contracts": {
+    "tools": ["voice_record"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -14,8 +17,8 @@
       },
       "recordingDurationSec": {
         "type": "number",
-        "description": "Max recording duration in seconds (default: 10)",
-        "default": 10
+        "description": "Max recording duration in seconds (default: 20)",
+        "default": 20
       },
       "transcriptionModel": {
         "type": "string",
