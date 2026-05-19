@@ -8,11 +8,22 @@ envVars:
 
 # OpenClaw Voice Bridge
 
-> Push-to-talk voice input via Snarling hardware button + USB mic → Whisper transcription → agent system event
+> Push-to-talk voice input via Snarling hardware button + USB mic → Whisper transcription → agent system event (instant wake via /hooks/wake)
 
 ## What It Does
 
-When a user presses the **X button** on a Snarling display, the hardware sends a POST to `/start-listening` on the OpenClaw gateway. The voice bridge plugin records 10 seconds of audio from the USB mic, transcribes it via OpenAI Whisper, and injects the transcript as a system event prefixed with `🎤 Voice input:`.
+When a user presses the **X button** on a Snarling display, the hardware sends a POST to `/start-listening` on the OpenClaw gateway. The voice bridge plugin records 20 seconds of audio from the USB mic, transcribes it via OpenAI Whisper (`gpt-4o-mini-transcribe`), and injects the transcript as a system event via `/hooks/wake` — which enqueues the text AND triggers an immediate agent heartbeat. The agent sees the voice input within ~2s of recording completion.
+
+## v2026.5.18+ Requirements
+
+- **`contracts.tools`** must be declared in `openclaw.plugin.json` manifest:
+  ```json
+  { "contracts": { "tools": ["voice_record"] } }
+  ```
+- **`hooks.allowConversationAccess: true`** must be in the plugin's config in `openclaw.json` — without this, the plugin loads lazily and its HTTP routes are invisible to the server:
+  ```json
+  { "openclaw-voice-bridge": { "enabled": true, "config": {}, "hooks": { "allowConversationAccess": true } } }
+  ```
 
 ## System Events
 
@@ -42,7 +53,7 @@ Keep notification messages under 80 characters (Snarling display limit). For lon
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/start-listening` | POST | gateway token | Start a 10s recording. Returns `{status: "recording", duration: N}` |
+| `/start-listening` | POST | gateway token | Start a recording (default 20s, max 30s). Returns `{status: "recording", duration: N}` |
 | `/audio-status` | GET | gateway token | Returns `{recording: bool, micDevice, transcriptionModel, authAvailable}` |
 
 ### Starting a Recording
@@ -51,10 +62,31 @@ Keep notification messages under 80 characters (Snarling display limit). For lon
 curl -X POST http://localhost:18789/start-listening \
   -H "Authorization: Bearer <gateway-token>" \
   -H "Content-Type: application/json" \
-  -d '{"duration": 10}'
+  -d '{"duration": 20}'
 ```
 
-Duration is optional (default: 10s, max: 30s).
+Duration is optional (default: 20s, max: 30s).
+
+## Wake: POST /hooks/wake
+
+After transcription, the plugin calls `POST /hooks/wake { text: transcript, mode: "now" }` which:
+
+1. Enqueues the transcript as a system event in the main session
+2. Triggers an immediate agent heartbeat
+
+This is a **single-call** pattern — no separate `enqueueSystemEvent` needed. The agent wakes and processes the voice input within ~2s.
+
+**Auth**: Requires `Authorization: Bearer <hooks-token>` (distinct from gateway admin token).
+
+**Config required** (in `openclaw.json`):
+```json
+{
+  "hooks": {
+    "enabled": true,
+    "token": "<hooks-token>"
+  }
+}
+```
 
 ## Snarling Button Mapping
 
@@ -67,29 +99,31 @@ Duration is optional (default: 10s, max: 30s).
 
 The X button only triggers voice input when no approval or notification is active.
 
+## Recording Pipeline (v4)
+
+The v4 pipeline starts arecord and OpenAI key resolution **in parallel** — mic begins recording within ~82ms of button press (vs 5-6s delay in earlier versions):
+
+1. X press → snarling POST to `/start-listening`
+2. Handler sets `isRecording=true`, sends 200 OK, kicks off two parallel promises:
+   - `recordAudio(micDevice, 20s, wavPath)` — arecord starts immediately
+   - `resolveOpenAIKey(runtime)` — resolves in background (~5s)
+3. Both promises await separately — recording completes regardless of key resolution time
+4. Transcription via `gpt-4o-mini-transcribe` (~2s)
+5. `POST /hooks/wake { text: transcript, mode: "now" }` — instant agent wake
+6. Snarling state set back to sleeping
+
 ## Known Limitations
-
-### Wake Gap
-
-Voice transcripts are enqueued via `enqueueSystemEvent()`. The agent only processes system events on the next heartbeat (default: 30 minutes). This means:
-
-- **Voice input is NOT delivered in real-time** — there is a delay until the next heartbeat
-- Reducing the heartbeat interval (e.g., to 15-30 seconds) shortens this gap
-- The `requestHeartbeatNow()` and `runHeartbeatOnce()` runtime methods do **not** wake an idle agent
-- This is a known architecture gap — no plugin-side API can trigger an immediate agent turn
-
-### Recording Quality
 
 - USB mic picks up audio within ~1-2 feet
 - Empty transcripts are silently skipped (not enqueued)
 - Whisper may truncate trailing words with "..."
 - Background noise can cause false activations
+- OpenAI API key is cached after first resolution; first call after restart takes ~5-6s (mitigated by v4 parallel start)
 
 ## Plugin Location
 
-- Source: `~/.openclaw/extensions/openclaw-voice-bridge/index.ts`
-- Compiled: `~/.openclaw/extensions/openclaw-voice-bridge/index.mjs`
-- Config: `openclaw.plugin.json` with `micDevice`, `recordingDurationSec`, `transcriptionModel`
+- Source: `~/.openclaw/extensions/openclaw-voice-bridge/index.mjs` (hand-curated, NOT esbuild output)
+- Config: `openclaw.plugin.json` with `micDevice`, `recordingDurationSec` (default: 20), `transcriptionModel`
 - GitHub: https://github.com/snarflakes/OpenClaw-Voice-Bridge (development branch)
 
 ## Debugging
@@ -97,3 +131,5 @@ Voice transcripts are enqueued via `enqueueSystemEvent()`. The agent only proces
 Debug logs at `/tmp/voice-bridge-debug.log` (when enabled in plugin code). WAV files are created at `/tmp/voice_recording.wav.<timestamp>.wav` during recording and deleted after transcription.
 
 After code changes to the plugin, a **full process restart** is required (`systemctl --user restart openclaw-gateway`). SIGUSR1 hot-reload only reloads config, not plugin code.
+
+⚠️ **Do NOT esbuild rebuild `index.mjs` from `index.ts`** — the esbuild output differs subtly from the hand-curated git version and breaks transcription. Apply patches surgically to `index.mjs` directly.
