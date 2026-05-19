@@ -17,8 +17,8 @@
       },
       "recordingDurationSec": {
         "type": "number",
-        "description": "Max recording duration in seconds (default: 10)",
-        "default": 10
+        "description": "Max recording duration in seconds (default: 20)",
+        "default": 20
       },
       "transcriptionModel": {
         "type": "string",

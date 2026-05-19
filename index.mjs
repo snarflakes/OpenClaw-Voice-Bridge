@@ -7,7 +7,7 @@ import { randomUUID } from "crypto";
 var SNARLING_URL = "http://localhost:5000/state";
 var RECORDING_PATH = "/tmp/voice_recording.wav";
 var DEFAULT_MIC_DEVICE = "plughw:3,0";
-var DEFAULT_RECORDING_DURATION = 10;
+var DEFAULT_RECORDING_DURATION = 20;
 var DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 var isRecording = false;
 var cachedApiKey = null;
