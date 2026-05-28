@@ -1,10 +1,10 @@
-// index.ts
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { readFile } from "fs/promises";
 import { appendFileSync } from "fs";
 import { randomUUID } from "crypto";
-var DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
-var cachedApiKey = null;
+const SNARLING_URL = "http://localhost:5000/state";
+const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+let cachedApiKey = null;
 async function setSnarlingState(state) {
   try {
     const http = await import("http");
@@ -239,32 +239,87 @@ var index_default = definePluginEntry({
                   }
                 }
                 try {
-                  setTimeout(() => {
-                    systemApi.runHeartbeatOnce({
-                      agentId: "main",
-                      sessionKey,
-                      reason: "hook",
-                      heartbeat: { target: "last" }
-                    }).then((hbResult) => {
-                      console.info(`[openclaw-voice-bridge] runHeartbeatOnce result:`, JSON.stringify(hbResult));
-                      try {
-                        appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} runHeartbeatOnce result: ${JSON.stringify(hbResult)}
-`);
-                      } catch (_e) {
+                  setImmediate(() => {
+                    try {
+                      const wakeReason = "hook:voice_input";
+                      if (systemApi?.requestHeartbeatNow) {
+                        systemApi.requestHeartbeatNow({
+                          reason: wakeReason,
+                          sessionKey,
+                          coalesceMs: 100
+                        });
                       }
-                    }).catch((e) => {
-                      console.error(`[openclaw-voice-bridge] runHeartbeatOnce error: ${e?.message || e}`);
-                      try {
-                        appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} runHeartbeatOnce error: ${e?.message || e}
+                      if (systemApi?.runHeartbeatOnce) {
+                        systemApi.runHeartbeatOnce({
+                          agentId: "main",
+                          sessionKey,
+                          reason: wakeReason,
+                          heartbeat: { target: "last" }
+                        }).then((hbResult) => {
+                          console.info(`[openclaw-voice-bridge] runHeartbeatOnce result:`, JSON.stringify(hbResult));
+                          try {
+                            appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} runHeartbeatOnce result: ${JSON.stringify(hbResult)}
 `);
-                      } catch (_e) {
+                          } catch (_e) {
+                          }
+                        }).catch((e) => {
+                          console.error(`[openclaw-voice-bridge] runHeartbeatOnce error: ${e?.message || e}`);
+                          try {
+                            appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} runHeartbeatOnce error: ${e?.message || e}
+`);
+                          } catch (_e) {
+                          }
+                        });
                       }
-                    });
-                  }, 100);
+                      setTimeout(() => {
+                        try {
+                          systemApi?.requestHeartbeatNow?.({
+                            reason: wakeReason,
+                            sessionKey,
+                            coalesceMs: 0
+                          });
+                        } catch (_e) {
+                        }
+                      }, 500);
+                      try {
+                        const hooksToken = process.env.OPENCLAW_HOOKS_TOKEN || "voicebridge-local-hooks-secret";
+                        const hooksUrl = `http://127.0.0.1:${process.env.OPENCLAW_PORT || 18789}/hooks/wake`;
+                        import("http").then((http) => {
+                          const postData = JSON.stringify({ text: `Voice input received: ${transcript}`, mode: "now" });
+                          const wakeReq = http.request(hooksUrl, {
+                            method: "POST",
+                            headers: {
+                              "Content-Type": "application/json",
+                              "Authorization": `Bearer ${hooksToken}`,
+                              "Content-Length": Buffer.byteLength(postData)
+                            },
+                            timeout: 3e3
+                          }, (wakeRes) => {
+                            let data = "";
+                            wakeRes.on("data", (chunk) => {
+                              data += chunk;
+                            });
+                            wakeRes.on("end", () => {
+                              console.info(`[openclaw-voice-bridge] /hooks/wake fallback response: ${wakeRes.statusCode} ${data}`);
+                            });
+                          });
+                          wakeReq.on("error", (e) => {
+                            console.warn(`[openclaw-voice-bridge] /hooks/wake fallback failed: ${e.message}`);
+                          });
+                          wakeReq.write(postData);
+                          wakeReq.end();
+                        });
+                      } catch (_wakeFallbackErr) {
+                        console.warn(`[openclaw-voice-bridge] /hooks/wake fallback error: ${_wakeFallbackErr}`);
+                      }
+                    } catch (_wakeErr) {
+                      console.warn(`[openclaw-voice-bridge] Wake cascade error: ${_wakeErr}`);
+                    }
+                  });
                 } catch (e) {
-                  console.error(`[openclaw-voice-bridge] runHeartbeatOnce error: ${e?.message || e}`);
+                  console.error(`[openclaw-voice-bridge] Wake cascade setup error: ${e?.message || e}`);
                   try {
-                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} runHeartbeatOnce error: ${e?.message || e}
+                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Wake cascade setup error: ${e?.message || e}
 `);
                   } catch (_e) {
                   }
