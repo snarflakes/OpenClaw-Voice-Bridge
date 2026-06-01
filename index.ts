@@ -208,111 +208,64 @@ export default definePluginEntry({
             return;
           }
 
-          // Inject and wake
+          // Inject and wake via one-shot cron job
+          // Replaces broken enqueueSystemEvent + requestHeartbeatNow + runHeartbeatOnce + /hooks/wake cascade
+          // Cron with sessionTarget: "main" reliably wakes the agent (see audio-brainstorm.md)
           const voiceText = `🎤 Voice input: ${transcript}`;
-          const sessionKey = "agent:main:main";
 
           try {
-            const systemApi = api.runtime?.system;
-            let usedRuntimeApi = false;
+            const gatewayPort = process.env.OPENCLAW_PORT || 18789;
+            const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || "";
+            const cronUrl = `http://127.0.0.1:${gatewayPort}/api/v1/admin/rpc`;
 
-            if (systemApi?.enqueueSystemEvent && systemApi?.runHeartbeatOnce) {
-              try {
-                systemApi.enqueueSystemEvent(voiceText, { sessionKey });
-                console.info(`[openclaw-voice-bridge] Enqueued system event via runtime API`);
-                try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Enqueued via runtime API\n`); } catch(_e) {}
-              } catch (e: any) {
-                console.error(`[openclaw-voice-bridge] enqueueSystemEvent error: ${e?.message || e}`);
-                try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} enqueueSystemEvent error: ${e?.message || e}\n`); } catch(_e) {}
-              }
+            // Schedule a one-shot cron job 2 seconds from now to allow for processing
+            const fireAt = new Date(Date.now() + 2000).toISOString();
 
-              // Wake cascade — same layered approach as interaction-bridge-v2:
-              // 1. requestHeartbeatNow (signal intent to run, coalesced)
-              // 2. runHeartbeatOnce (try immediate execution)
-              // 3. setTimeout retry with requestHeartbeatNow (second attempt, no coalescing)
-              // 4. /hooks/wake HTTP fallback (direct gateway wake endpoint)
-              try {
-                setImmediate(() => {
-                  try {
-                    const wakeReason = "hook:voice_input";
+            const cronPayload = JSON.stringify({
+              method: "cron.add",
+              params: {
+                job: {
+                  name: "voice-wake",
+                  schedule: { kind: "at", at: fireAt },
+                  sessionTarget: "main",
+                  wakeMode: "now",
+                  deleteAfterRun: true,
+                  payload: {
+                    kind: "systemEvent",
+                    text: voiceText,
+                  },
+                },
+              },
+            });
 
-                    // Step 1: Signal heartbeat intent (coalesced — batches with other pending wakes)
-                    if (systemApi?.requestHeartbeatNow) {
-                      systemApi.requestHeartbeatNow({
-                        reason: wakeReason,
-                        sessionKey,
-                        coalesceMs: 100,
-                      });
-                    }
-
-                    // Step 2: Try immediate execution
-                    if (systemApi?.runHeartbeatOnce) {
-                      systemApi.runHeartbeatOnce({
-                        agentId: "main",
-                        sessionKey,
-                        reason: wakeReason,
-                        heartbeat: { target: "last" },
-                      }).then((hbResult: any) => {
-                        console.info(`[openclaw-voice-bridge] runHeartbeatOnce result:`, JSON.stringify(hbResult));
-                        try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} runHeartbeatOnce result: ${JSON.stringify(hbResult)}\n`); } catch(_e) {}
-                      }).catch((e: any) => {
-                        console.error(`[openclaw-voice-bridge] runHeartbeatOnce error: ${e?.message || e}`);
-                        try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} runHeartbeatOnce error: ${e?.message || e}\n`); } catch(_e) {}
-                      });
-                    }
-
-                    // Step 3: Retry requestHeartbeatNow after 500ms, no coalescing
-                    setTimeout(() => {
-                      try {
-                        systemApi?.requestHeartbeatNow?.({
-                          reason: wakeReason,
-                          sessionKey,
-                          coalesceMs: 0,
-                        });
-                      } catch (_e) {}
-                    }, 500);
-
-                    // Step 4: /hooks/wake HTTP fallback
-                    try {
-                      const hooksToken = process.env.OPENCLAW_HOOKS_TOKEN || "voicebridge-local-hooks-secret";
-                      const hooksUrl = `http://127.0.0.1:${process.env.OPENCLAW_PORT || 18789}/hooks/wake`;
-                      import("http").then((http) => {
-                        const postData = JSON.stringify({ text: `Voice input received: ${transcript}`, mode: "now" });
-                        const wakeReq = http.request(hooksUrl, {
-                          method: "POST",
-                          headers: {
-                            "Content-Type": "application/json",
-                            "Authorization": `Bearer ${hooksToken}`,
-                            "Content-Length": Buffer.byteLength(postData),
-                          },
-                          timeout: 3e3,
-                        }, (wakeRes: any) => {
-                          let data = "";
-                          wakeRes.on("data", (chunk: any) => { data += chunk; });
-                          wakeRes.on("end", () => {
-                            console.info(`[openclaw-voice-bridge] /hooks/wake fallback response: ${wakeRes.statusCode} ${data}`);
-                          });
-                        });
-                        wakeReq.on("error", (e: any) => {
-                          console.warn(`[openclaw-voice-bridge] /hooks/wake fallback failed: ${e.message}`);
-                        });
-                        wakeReq.write(postData);
-                        wakeReq.end();
-                      });
-                    } catch (_wakeFallbackErr) {
-                      console.warn(`[openclaw-voice-bridge] /hooks/wake fallback error: ${_wakeFallbackErr}`);
-                    }
-                  } catch (_wakeErr) {
-                    console.warn(`[openclaw-voice-bridge] Wake cascade error: ${_wakeErr}`);
-                  }
-                });
-              } catch (e: any) {
-                console.error(`[openclaw-voice-bridge] Wake cascade setup error: ${e?.message || e}`);
-                try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Wake cascade setup error: ${e?.message || e}\n`); } catch(_e) {}
-              }
-            }
-
-            // Wake cascade includes /hooks/wake HTTP fallback as last resort
+            const http = await import("http");
+            const req = http.request(cronUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${gatewayToken}`,
+                "Content-Length": Buffer.byteLength(cronPayload),
+              },
+              timeout: 5e3,
+            }, (res: any) => {
+              let data = "";
+              res.on("data", (chunk: any) => { data += chunk; });
+              res.on("end", () => {
+                const ok = res.statusCode >= 200 && res.statusCode < 300;
+                if (ok) {
+                  console.info(`[openclaw-voice-bridge] Cron wake scheduled: ${res.statusCode}`);
+                } else {
+                  console.error(`[openclaw-voice-bridge] Cron wake failed: ${res.statusCode} ${data}`);
+                }
+                try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} cron.add ${ok ? 'ok' : 'FAIL'}: ${res.statusCode} ${data}\n`); } catch(_e) {}
+              });
+            });
+            req.on("error", (e: any) => {
+              console.error(`[openclaw-voice-bridge] Cron wake error: ${e.message}`);
+              try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} cron.add error: ${e.message}\n`); } catch(_e) {}
+            });
+            req.write(cronPayload);
+            req.end();
           } catch (err: any) {
             console.error(`[openclaw-voice-bridge] Wake error: ${err?.message || err}`);
           }
