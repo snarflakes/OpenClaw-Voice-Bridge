@@ -208,31 +208,46 @@ export default definePluginEntry({
             return;
           }
 
-          // Inject and wake via one-shot cron job
-          // Replaces broken enqueueSystemEvent + requestHeartbeatNow + runHeartbeatOnce + /hooks/wake cascade
-          // Cron with sessionTarget: "main" reliably wakes the agent (see audio-brainstorm.md)
+          // Hybrid wake: inject event into real main session, then use cron as wake trigger
+          // Step 1: enqueueSystemEvent injects voice text into agent:main:main (the real session)
+          // Step 2: One-shot cron with isolated agentTurn forces heartbeat to drain the queued event
           const voiceText = `🎤 Voice input: ${transcript}`;
+          const sessionKey = "agent:main:main";
 
           try {
+            // Step 1: Inject the voice transcript into the real main session
+            const systemApi = api.runtime?.system;
+            if (systemApi?.enqueueSystemEvent) {
+              systemApi.enqueueSystemEvent(voiceText, { sessionKey });
+              console.info(`[openclaw-voice-bridge] Enqueued system event into ${sessionKey}`);
+              try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Enqueued into ${sessionKey}\n`); } catch(_e) {}
+            } else {
+              console.error(`[openclaw-voice-bridge] enqueueSystemEvent not available`);
+              try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} ERROR: enqueueSystemEvent not available\n`); } catch(_e) {}
+            }
+
+            // Step 2: Use cron as wake trigger — isolated agentTurn forces main agent heartbeat
+            // The cron job runs in an isolated session (harmless) but its execution
+            // triggers the scheduler to run, which drains the main session's event queue.
             const gatewayPort = process.env.OPENCLAW_PORT || 18789;
             const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || "";
             const cronUrl = `http://127.0.0.1:${gatewayPort}/api/v1/admin/rpc`;
-
-            // Schedule a one-shot cron job 2 seconds from now to allow for processing
-            const fireAt = new Date(Date.now() + 2000).toISOString();
+            const fireAt = new Date(Date.now() + 1000).toISOString();
 
             const cronPayload = JSON.stringify({
               method: "cron.add",
               params: {
                 job: {
-                  name: "voice-wake",
+                  name: "voice-wake-trigger",
                   schedule: { kind: "at", at: fireAt },
-                  sessionTarget: "main",
+                  sessionTarget: "isolated",
                   wakeMode: "now",
                   deleteAfterRun: true,
+                  delivery: { mode: "none" },
                   payload: {
-                    kind: "systemEvent",
-                    text: voiceText,
+                    kind: "agentTurn",
+                    message: "Wake trigger. Reply with exactly: HEARTBEAT_OK",
+                    model: "ollama/glm-5.1:cloud",
                   },
                 },
               },
@@ -253,21 +268,31 @@ export default definePluginEntry({
               res.on("end", () => {
                 const ok = res.statusCode >= 200 && res.statusCode < 300;
                 if (ok) {
-                  console.info(`[openclaw-voice-bridge] Cron wake scheduled: ${res.statusCode}`);
+                  console.info(`[openclaw-voice-bridge] Wake trigger scheduled: ${res.statusCode}`);
                 } else {
-                  console.error(`[openclaw-voice-bridge] Cron wake failed: ${res.statusCode} ${data}`);
+                  console.error(`[openclaw-voice-bridge] Wake trigger failed: ${res.statusCode} ${data}`);
                 }
-                try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} cron.add ${ok ? 'ok' : 'FAIL'}: ${res.statusCode} ${data}\n`); } catch(_e) {}
+                try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} wake-trigger ${ok ? 'ok' : 'FAIL'}: ${res.statusCode}\n`); } catch(_e) {}
               });
             });
             req.on("error", (e: any) => {
-              console.error(`[openclaw-voice-bridge] Cron wake error: ${e.message}`);
-              try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} cron.add error: ${e.message}\n`); } catch(_e) {}
+              console.error(`[openclaw-voice-bridge] Wake trigger error: ${e.message}`);
             });
             req.write(cronPayload);
             req.end();
+
+            // Also try runtime API wake as backup
+            if (systemApi?.requestHeartbeatNow) {
+              systemApi.requestHeartbeatNow({
+                reason: "hook:voice_input",
+                sessionKey,
+                coalesceMs: 0,
+              });
+              console.info(`[openclaw-voice-bridge] requestHeartbeatNow sent`);
+            }
           } catch (err: any) {
             console.error(`[openclaw-voice-bridge] Wake error: ${err?.message || err}`);
+            try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Wake error: ${err?.message || err}\n`); } catch(_e) {}
           }
 
           // Go back to sleeping

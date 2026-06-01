@@ -217,23 +217,43 @@ var index_default = definePluginEntry({
               return;
             }
             const voiceText = `\u{1F3A4} Voice input: ${transcript}`;
+            const sessionKey = "agent:main:main";
             try {
+              const systemApi = api.runtime?.system;
+              if (systemApi?.enqueueSystemEvent) {
+                systemApi.enqueueSystemEvent(voiceText, { sessionKey });
+                console.info(`[openclaw-voice-bridge] Enqueued system event into ${sessionKey}`);
+                try {
+                  appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Enqueued into ${sessionKey}
+`);
+                } catch (_e) {
+                }
+              } else {
+                console.error(`[openclaw-voice-bridge] enqueueSystemEvent not available`);
+                try {
+                  appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} ERROR: enqueueSystemEvent not available
+`);
+                } catch (_e) {
+                }
+              }
               const gatewayPort = process.env.OPENCLAW_PORT || 18789;
               const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || "";
               const cronUrl = `http://127.0.0.1:${gatewayPort}/api/v1/admin/rpc`;
-              const fireAt = new Date(Date.now() + 2e3).toISOString();
+              const fireAt = new Date(Date.now() + 1e3).toISOString();
               const cronPayload = JSON.stringify({
                 method: "cron.add",
                 params: {
                   job: {
-                    name: "voice-wake",
+                    name: "voice-wake-trigger",
                     schedule: { kind: "at", at: fireAt },
-                    sessionTarget: "main",
+                    sessionTarget: "isolated",
                     wakeMode: "now",
                     deleteAfterRun: true,
+                    delivery: { mode: "none" },
                     payload: {
-                      kind: "systemEvent",
-                      text: voiceText
+                      kind: "agentTurn",
+                      message: "Wake trigger. Reply with exactly: HEARTBEAT_OK",
+                      model: "ollama/glm-5.1:cloud"
                     }
                   }
                 }
@@ -255,29 +275,37 @@ var index_default = definePluginEntry({
                 res2.on("end", () => {
                   const ok = res2.statusCode >= 200 && res2.statusCode < 300;
                   if (ok) {
-                    console.info(`[openclaw-voice-bridge] Cron wake scheduled: ${res2.statusCode}`);
+                    console.info(`[openclaw-voice-bridge] Wake trigger scheduled: ${res2.statusCode}`);
                   } else {
-                    console.error(`[openclaw-voice-bridge] Cron wake failed: ${res2.statusCode} ${data}`);
+                    console.error(`[openclaw-voice-bridge] Wake trigger failed: ${res2.statusCode} ${data}`);
                   }
                   try {
-                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} cron.add ${ok ? "ok" : "FAIL"}: ${res2.statusCode} ${data}
+                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} wake-trigger ${ok ? "ok" : "FAIL"}: ${res2.statusCode}
 `);
                   } catch (_e) {
                   }
                 });
               });
               req2.on("error", (e) => {
-                console.error(`[openclaw-voice-bridge] Cron wake error: ${e.message}`);
-                try {
-                  appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} cron.add error: ${e.message}
-`);
-                } catch (_e) {
-                }
+                console.error(`[openclaw-voice-bridge] Wake trigger error: ${e.message}`);
               });
               req2.write(cronPayload);
               req2.end();
+              if (systemApi?.requestHeartbeatNow) {
+                systemApi.requestHeartbeatNow({
+                  reason: "hook:voice_input",
+                  sessionKey,
+                  coalesceMs: 0
+                });
+                console.info(`[openclaw-voice-bridge] requestHeartbeatNow sent`);
+              }
             } catch (err) {
               console.error(`[openclaw-voice-bridge] Wake error: ${err?.message || err}`);
+              try {
+                appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Wake error: ${err?.message || err}
+`);
+              } catch (_e) {
+              }
             }
             setSnarlingState("sleeping").catch(() => {
             });
