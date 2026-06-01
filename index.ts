@@ -226,69 +226,31 @@ export default definePluginEntry({
               try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} ERROR: enqueueSystemEvent not available\n`); } catch(_e) {}
             }
 
-            // Step 2: Use cron as wake trigger — isolated agentTurn forces main agent heartbeat
-            // The cron job runs in an isolated session (harmless) but its execution
-            // triggers the scheduler to run, which drains the main session's event queue.
-            const gatewayPort = process.env.OPENCLAW_PORT || 18789;
-            const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || "";
-            const cronUrl = `http://127.0.0.1:${gatewayPort}/api/v1/admin/rpc`;
-            const fireAt = new Date(Date.now() + 1000).toISOString();
-
-            const cronPayload = JSON.stringify({
-              method: "cron.add",
-              params: {
-                job: {
-                  name: "voice-wake-trigger",
-                  schedule: { kind: "at", at: fireAt },
-                  sessionTarget: "isolated",
-                  wakeMode: "now",
-                  deleteAfterRun: true,
-                  delivery: { mode: "none" },
-                  payload: {
-                    kind: "agentTurn",
-                    message: "Wake trigger. Reply with exactly: HEARTBEAT_OK",
-                    model: "ollama/glm-5.1:cloud",
-                  },
-                },
-              },
-            });
-
-            const http = await import("http");
-            const req = http.request(cronUrl, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${gatewayToken}`,
-                "Content-Length": Buffer.byteLength(cronPayload),
-              },
-              timeout: 5e3,
-            }, (res: any) => {
-              let data = "";
-              res.on("data", (chunk: any) => { data += chunk; });
-              res.on("end", () => {
-                const ok = res.statusCode >= 200 && res.statusCode < 300;
-                if (ok) {
-                  console.info(`[openclaw-voice-bridge] Wake trigger scheduled: ${res.statusCode}`);
+            // Step 2: Wake the main agent via `openclaw system event --mode now`
+            // This is the same path as the CLI — it both enqueues the event AND
+            // triggers an immediate heartbeat. Cron doesn't work for this because:
+            //   - sessionTarget:"main" + systemEvent creates a NEW cron session, not injection
+            //   - sessionTarget:"isolated" + agentTurn doesn't trigger the main heartbeat
+            // requestHeartbeatNow alone doesn't reliably wake an idle session.
+            // `openclaw system event --mode now` calls the gateway's `wake` RPC which works.
+            try {
+              const { execFile } = await import("child_process");
+              const escapedText = voiceText.replace(/"/g, '\\"');
+              execFile("openclaw", ["system", "event", "--text", voiceText, "--mode", "now"], {
+                timeout: 10e3,
+                shell: false,
+              }, (err, stdout, stderr) => {
+                if (err) {
+                  console.error(`[openclaw-voice-bridge] openclaw system event failed: ${err.message}`);
+                  try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} openclaw-wake FAIL: ${err.message}\n`); } catch(_e) {}
                 } else {
-                  console.error(`[openclaw-voice-bridge] Wake trigger failed: ${res.statusCode} ${data}`);
+                  console.info(`[openclaw-voice-bridge] openclaw system event ok: ${stdout?.trim()}`);
+                  try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} openclaw-wake ok: ${stdout?.trim()}\n`); } catch(_e) {}
                 }
-                try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} wake-trigger ${ok ? 'ok' : 'FAIL'}: ${res.statusCode}\n`); } catch(_e) {}
               });
-            });
-            req.on("error", (e: any) => {
-              console.error(`[openclaw-voice-bridge] Wake trigger error: ${e.message}`);
-            });
-            req.write(cronPayload);
-            req.end();
-
-            // Also try runtime API wake as backup
-            if (systemApi?.requestHeartbeatNow) {
-              systemApi.requestHeartbeatNow({
-                reason: "hook:voice_input",
-                sessionKey,
-                coalesceMs: 0,
-              });
-              console.info(`[openclaw-voice-bridge] requestHeartbeatNow sent`);
+            } catch (execErr: any) {
+              console.error(`[openclaw-voice-bridge] exec error: ${execErr?.message || execErr}`);
+              try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} exec error: ${execErr?.message || execErr}\n`); } catch(_e) {}
             }
           } catch (err: any) {
             console.error(`[openclaw-voice-bridge] Wake error: ${err?.message || err}`);

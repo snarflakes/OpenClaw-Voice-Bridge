@@ -236,68 +236,36 @@ var index_default = definePluginEntry({
                 } catch (_e) {
                 }
               }
-              const gatewayPort = process.env.OPENCLAW_PORT || 18789;
-              const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || "";
-              const cronUrl = `http://127.0.0.1:${gatewayPort}/api/v1/admin/rpc`;
-              const fireAt = new Date(Date.now() + 1e3).toISOString();
-              const cronPayload = JSON.stringify({
-                method: "cron.add",
-                params: {
-                  job: {
-                    name: "voice-wake-trigger",
-                    schedule: { kind: "at", at: fireAt },
-                    sessionTarget: "isolated",
-                    wakeMode: "now",
-                    deleteAfterRun: true,
-                    delivery: { mode: "none" },
-                    payload: {
-                      kind: "agentTurn",
-                      message: "Wake trigger. Reply with exactly: HEARTBEAT_OK",
-                      model: "ollama/glm-5.1:cloud"
+              try {
+                const { execFile } = await import("child_process");
+                const escapedText = voiceText.replace(/"/g, '\\"');
+                execFile("openclaw", ["system", "event", "--text", voiceText, "--mode", "now"], {
+                  timeout: 1e4,
+                  shell: false
+                }, (err, stdout, stderr) => {
+                  if (err) {
+                    console.error(`[openclaw-voice-bridge] openclaw system event failed: ${err.message}`);
+                    try {
+                      appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} openclaw-wake FAIL: ${err.message}
+`);
+                    } catch (_e) {
+                    }
+                  } else {
+                    console.info(`[openclaw-voice-bridge] openclaw system event ok: ${stdout?.trim()}`);
+                    try {
+                      appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} openclaw-wake ok: ${stdout?.trim()}
+`);
+                    } catch (_e) {
                     }
                   }
-                }
-              });
-              const http = await import("http");
-              const req2 = http.request(cronUrl, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "Authorization": `Bearer ${gatewayToken}`,
-                  "Content-Length": Buffer.byteLength(cronPayload)
-                },
-                timeout: 5e3
-              }, (res2) => {
-                let data = "";
-                res2.on("data", (chunk) => {
-                  data += chunk;
                 });
-                res2.on("end", () => {
-                  const ok = res2.statusCode >= 200 && res2.statusCode < 300;
-                  if (ok) {
-                    console.info(`[openclaw-voice-bridge] Wake trigger scheduled: ${res2.statusCode}`);
-                  } else {
-                    console.error(`[openclaw-voice-bridge] Wake trigger failed: ${res2.statusCode} ${data}`);
-                  }
-                  try {
-                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} wake-trigger ${ok ? "ok" : "FAIL"}: ${res2.statusCode}
+              } catch (execErr) {
+                console.error(`[openclaw-voice-bridge] exec error: ${execErr?.message || execErr}`);
+                try {
+                  appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} exec error: ${execErr?.message || execErr}
 `);
-                  } catch (_e) {
-                  }
-                });
-              });
-              req2.on("error", (e) => {
-                console.error(`[openclaw-voice-bridge] Wake trigger error: ${e.message}`);
-              });
-              req2.write(cronPayload);
-              req2.end();
-              if (systemApi?.requestHeartbeatNow) {
-                systemApi.requestHeartbeatNow({
-                  reason: "hook:voice_input",
-                  sessionKey,
-                  coalesceMs: 0
-                });
-                console.info(`[openclaw-voice-bridge] requestHeartbeatNow sent`);
+                } catch (_e) {
+                }
               }
             } catch (err) {
               console.error(`[openclaw-voice-bridge] Wake error: ${err?.message || err}`);
