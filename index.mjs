@@ -1,10 +1,10 @@
+// index.ts
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { readFile } from "fs/promises";
 import { appendFileSync } from "fs";
 import { randomUUID } from "crypto";
-const SNARLING_URL = "http://localhost:5000/state";
-const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
-let cachedApiKey = null;
+var DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+var cachedApiKey = null;
 async function setSnarlingState(state) {
   try {
     const http = await import("http");
@@ -219,114 +219,85 @@ var index_default = definePluginEntry({
             const voiceText = `\u{1F3A4} Voice input: ${transcript}`;
             const sessionKey = "agent:main:main";
             try {
-              const systemApi = api.runtime?.system;
-              let usedRuntimeApi = false;
-              if (systemApi?.enqueueSystemEvent && systemApi?.runHeartbeatOnce) {
+              const subagent = api.runtime?.subagent;
+              if (subagent?.run) {
+                const subagentPrompt = [
+                  "You are a voice assistant. Snar just spoke into a device and said:",
+                  `"${transcript}"`,
+                  "",
+                  "Answer briefly and naturally (under 80 chars if possible).",
+                  "Then send the answer to the Snarling display by running this curl command:",
+                  'curl -s -X POST http://localhost:5000/approval/alert -H "Content-Type: application/json" -d \'{"type":"notification","message":"<YOUR_ANSWER>","priority":"normal","secret":"voice-bridge"}\'',
+                  "",
+                  "Replace <YOUR_ANSWER> with your actual answer (URL-escape quotes).",
+                  "Do NOT use send_notification. Use the curl command above.",
+                ].join("\n");
                 try {
-                  systemApi.enqueueSystemEvent(voiceText, { sessionKey });
-                  console.info(`[openclaw-voice-bridge] Enqueued system event via runtime API`);
-                  try {
-                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Enqueued via runtime API
+                  appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Spawning subagent for voice input
 `);
-                  } catch (_e) {
-                  }
-                } catch (e) {
-                  console.error(`[openclaw-voice-bridge] enqueueSystemEvent error: ${e?.message || e}`);
-                  try {
-                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} enqueueSystemEvent error: ${e?.message || e}
+                } catch (_e) {
+                }
+                const result = await subagent.run({
+                  sessionKey,
+                  message: subagentPrompt,
+                  lightContext: true
+                });
+                const runId = result?.runId ?? "unknown";
+                console.info(`[openclaw-voice-bridge] Subagent spawned: runId=${runId}`);
+                try {
+                  appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Subagent spawned: runId=${runId}
 `);
-                  } catch (_e) {
+                } catch (_e) {
+                }
+                if (subagent.waitForRun) {
+                  try {
+                    const waitResult = await subagent.waitForRun({ runId, timeoutMs: 45e3 });
+                    const status = waitResult?.status ?? "unknown";
+                    try {
+                      appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Subagent wait: status=${status} error=${waitResult?.error || "none"}
+`);
+                    } catch (_e2) {
+                    }
+                    console.info(`[openclaw-voice-bridge] Subagent completed: ${status}`);
+                  } catch (we) {
+                    try {
+                      appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Subagent wait error: ${we?.message}
+`);
+                    } catch (_e3) {
+                    }
                   }
                 }
+              } else {
                 try {
-                  setImmediate(() => {
-                    try {
-                      const wakeReason = "hook:voice_input";
-                      if (systemApi?.requestHeartbeatNow) {
-                        systemApi.requestHeartbeatNow({
-                          reason: wakeReason,
-                          sessionKey,
-                          coalesceMs: 100
-                        });
-                      }
-                      if (systemApi?.runHeartbeatOnce) {
-                        systemApi.runHeartbeatOnce({
-                          agentId: "main",
-                          sessionKey,
-                          reason: wakeReason,
-                          heartbeat: { target: "last" }
-                        }).then((hbResult) => {
-                          console.info(`[openclaw-voice-bridge] runHeartbeatOnce result:`, JSON.stringify(hbResult));
-                          try {
-                            appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} runHeartbeatOnce result: ${JSON.stringify(hbResult)}
+                  appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} subagent.run not available, falling back to enqueueSystemEvent
 `);
-                          } catch (_e) {
-                          }
-                        }).catch((e) => {
-                          console.error(`[openclaw-voice-bridge] runHeartbeatOnce error: ${e?.message || e}`);
-                          try {
-                            appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} runHeartbeatOnce error: ${e?.message || e}
-`);
-                          } catch (_e) {
-                          }
-                        });
-                      }
-                      setTimeout(() => {
-                        try {
-                          systemApi?.requestHeartbeatNow?.({
-                            reason: wakeReason,
-                            sessionKey,
-                            coalesceMs: 0
-                          });
-                        } catch (_e) {
-                        }
-                      }, 500);
-                      try {
-                        const hooksToken = process.env.OPENCLAW_HOOKS_TOKEN || "voicebridge-local-hooks-secret";
-                        const hooksUrl = `http://127.0.0.1:${process.env.OPENCLAW_PORT || 18789}/hooks/wake`;
-                        import("http").then((http) => {
-                          const postData = JSON.stringify({ text: `Voice input received: ${transcript}`, mode: "now" });
-                          const wakeReq = http.request(hooksUrl, {
-                            method: "POST",
-                            headers: {
-                              "Content-Type": "application/json",
-                              "Authorization": `Bearer ${hooksToken}`,
-                              "Content-Length": Buffer.byteLength(postData)
-                            },
-                            timeout: 3e3
-                          }, (wakeRes) => {
-                            let data = "";
-                            wakeRes.on("data", (chunk) => {
-                              data += chunk;
-                            });
-                            wakeRes.on("end", () => {
-                              console.info(`[openclaw-voice-bridge] /hooks/wake fallback response: ${wakeRes.statusCode} ${data}`);
-                            });
-                          });
-                          wakeReq.on("error", (e) => {
-                            console.warn(`[openclaw-voice-bridge] /hooks/wake fallback failed: ${e.message}`);
-                          });
-                          wakeReq.write(postData);
-                          wakeReq.end();
-                        });
-                      } catch (_wakeFallbackErr) {
-                        console.warn(`[openclaw-voice-bridge] /hooks/wake fallback error: ${_wakeFallbackErr}`);
-                      }
-                    } catch (_wakeErr) {
-                      console.warn(`[openclaw-voice-bridge] Wake cascade error: ${_wakeErr}`);
-                    }
-                  });
-                } catch (e) {
-                  console.error(`[openclaw-voice-bridge] Wake cascade setup error: ${e?.message || e}`);
+                } catch (_e) {
+                }
+                const systemApi = api.runtime?.system;
+                if (systemApi?.enqueueSystemEvent) {
+                  systemApi.enqueueSystemEvent(voiceText, { sessionKey });
                   try {
-                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Wake cascade setup error: ${e?.message || e}
+                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Enqueued into ${sessionKey} (fallback)
 `);
-                  } catch (_e) {
+                  } catch (_e4) {
+                  }
+                }
+                if (systemApi?.runHeartbeatOnce) {
+                  const result2 = await systemApi.runHeartbeatOnce({ heartbeat: { target: "last" } });
+                  try {
+                    appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} runHeartbeatOnce: status=${result2?.status} (fallback)
+`);
+                  } catch (_e5) {
                   }
                 }
               }
             } catch (err) {
-              console.error(`[openclaw-voice-bridge] Wake error: ${err?.message || err}`);
+              console.error(`[openclaw-voice-bridge] Subagent error: ${err?.message || err}`);
+              try {
+                appendFileSync("/tmp/voice-bridge-debug.log", `${(/* @__PURE__ */ new Date()).toISOString()} Subagent error: ${err?.message || err}
+`);
+              } catch (_e6) {
+              }
             }
             setSnarlingState("sleeping").catch(() => {
             });
