@@ -1,32 +1,50 @@
 # OpenClaw Voice Bridge
 
-Push-to-talk voice input for OpenClaw, triggered by a hardware button on the Snarling display. Records audio from a USB microphone, transcribes via OpenAI Whisper, and delivers the transcript to your agent instantly.
+Push-to-talk voice input for OpenClaw, triggered by a hardware button on the Snarling display. Records audio from a USB microphone, transcribes via OpenAI Whisper, and delivers the transcript to your agent — which answers and pushes the result back to the display.
 
 ## How It Works
 
 ```
-┌─────────────┐    POST /start-listening     ┌──────────────────┐
-│  Snarling    │ ───────────────────────────▶ │  Voice Bridge    │
-│  X Button    │                              │  Plugin          │
-│  Display     │ ◀─── "recording" ─────────── │                  │
-└─────────────┘                                │                  │
-                                               │  1. arecord 20s │
-                                               │  2. Whisper API │
-                                               │  3. /hooks/wake  │
-                                               └────────┬────────┘
-                                                        │
-                                                        ▼
-                                               ┌──────────────────┐
-                                               │  OpenClaw Agent  │
-                                               │  🎤 Voice input:  │
-                                               │  "Hello there!"  │
-                                               └──────────────────┘
+┌─────────────┐    POST /transcribe-and-reply    ┌──────────────────────┐
+│  Snarling    │ ──────────────────────────────▶ │  Voice Bridge Plugin │
+│  X Button    │     { wav_path: "/tmp/..." }    │                      │
+│  Display     │ ◀─── { status: "transcribing" } │  1. Resolve API key  │
+└─────────────┘                                  │  2. Transcribe WAV   │
+       │                                         │  3. subagent.run()   │
+       │  arecord (in snarling thread)           └──────────┬───────────┘
+       │  20s @ 24kHz mono                                   │
+       ▼                                                     ▼
+┌─────────────┐                                  ┌──────────────────────┐
+│  WAV file    │ ──────────────────────────────▶ │  Isolated Agent Turn │
+│  /tmp/voice_ │                                  │                      │
+│  recording.* │                                  │  Answers question    │
+└─────────────┘                                  │  curls Snarling      │
+                                                 │  /approval/alert     │
+                                                 └──────────┬───────────┘
+                                                            │
+                                                            ▼
+                                                 ┌──────────────────────┐
+                                                 │  Snarling Display    │
+                                                 │  Notification shown  │
+                                                 │  (no A/B buttons)    │
+                                                 └──────────────────────┘
 ```
 
+### Flow
+
 1. Press **X** on the Snarling display
-2. The plugin records 20 seconds from the USB mic (starts within ~82ms)
-3. Audio is transcribed via `gpt-4o-mini-transcribe`
-4. Transcript is injected as a system event via `/hooks/wake` — agent wakes immediately
+2. Snarling starts `arecord` immediately in a background thread (82ms latency)
+3. After recording completes, Snarling POSTs the WAV path to `/transcribe-and-reply`
+4. The plugin transcribes via `gpt-4o-mini-transcribe` (~2s)
+5. The plugin calls `api.runtime.subagent.run()` with the transcript
+6. The subagent answers the question and curls the answer to Snarling's `/approval/alert` endpoint
+7. The answer appears on the Snarling display as a notification
+
+### Why subagent.run?
+
+Previous approaches using `enqueueSystemEvent` + heartbeat wake were unreliable. The system event would enqueue and the heartbeat would report `status=ran`, but the event text never surfaced in the agent's context during the heartbeat turn (phantom heartbeat bug #86090). CLI-based injection via `openclaw system event --mode now` either deadlocked the event loop (`execSync`) or completed successfully but still didn't surface the event.
+
+`subagent.run` creates a real agent turn that can execute tools — the subagent uses `exec` to curl the answer directly to Snarling, bypassing the broken heartbeat wake path entirely.
 
 ## Hardware
 
@@ -50,6 +68,15 @@ The USB mic plugs directly into the Pi. The Pimoroni Display HAT Mini sits on th
 | **A** | — | ✅ Approve | 👁️ Reveal |
 
 The X button only triggers voice input when no approval or notification is active. This prevents accidental recording during A/B interactions.
+
+## Architecture: Snarling Owns Recording
+
+In v3+, Snarling handles the recording directly in its own thread rather than delegating to the plugin. This eliminates front-clipping caused by gateway event loop blocking during agent turns.
+
+**Old flow (v1-v2):** X press → HTTP POST to plugin → plugin starts arecord → transcribe → inject
+**New flow (v3+):** X press → arecord in snarling thread → POST wav_path to plugin → plugin transcribes → subagent.run → answer to display
+
+Snarling's `trigger_voice_input()` method records audio and POSTs the file path after recording completes. The plugin handles transcription and delivery only.
 
 ## Installation
 
@@ -80,22 +107,18 @@ git clone -b development https://github.com/snarflakes/OpenClaw-Voice-Bridge.git
 }
 ```
 
-> ⚠️ **`hooks.allowConversationAccess: true` is required** (v2026.5.18+). Without it, the plugin loads lazily and its HTTP routes are invisible to the gateway's HTTP server. This caused mysterious 404 errors on `/start-listening`.
+> ⚠️ **`hooks.allowConversationAccess: true` is required** (v2026.5.18+). Without it, the plugin loads lazily and its HTTP routes are invisible to the gateway's HTTP server.
 
-### 3. Ensure hooks are enabled
+### 3. Environment variables
 
-The plugin uses `POST /hooks/wake` to deliver transcripts instantly. Your `openclaw.json` must have:
+The plugin needs:
 
-```json
-{
-  "hooks": {
-    "enabled": true,
-    "token": "your-hooks-secret"
-  }
-}
-```
+| Variable | Purpose |
+|----------|---------|
+| `OPENAI_API_KEY` | Transcription API access (resolved via OpenClaw auth runtime) |
+| `OPENCLAW_GATEWAY_TOKEN` | Gateway auth (declared in manifest `envVars`) |
 
-The hooks token **must be distinct** from the gateway admin token — reusing it is rejected by the gateway.
+The OpenAI key is resolved at runtime via `api.runtime.modelAuth.resolveApiKeyForProvider` — no need to hardcode it.
 
 ### 4. Verify your mic
 
@@ -103,19 +126,7 @@ The hooks token **must be distinct** from the gateway admin token — reusing it
 arecord -l
 ```
 
-You should see your USB device listed. The default device is `plughw:3,0` — if yours differs, set it in plugin config:
-
-```json
-{
-  "openclaw-voice-bridge": {
-    "enabled": true,
-    "config": {
-      "micDevice": "plughw:2,0"
-    },
-    "hooks": { "allowConversationAccess": true }
-  }
-}
-```
+You should see your USB device listed. The default device is `plughw:3,0` — if yours differs, set it in Snarling's config (snarling handles the recording, not the plugin).
 
 Quick test:
 
@@ -137,73 +148,43 @@ All config lives in `openclaw.json` under the `openclaw-voice-bridge.config` key
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `micDevice` | string | `plughw:3,0` | ALSA device for the USB microphone |
-| `recordingDurationSec` | number | `20` | Recording duration in seconds (max: 30) |
 | `transcriptionModel` | string | `gpt-4o-mini-transcribe` | OpenAI transcription model |
+
+Recording settings (duration, mic device) are controlled by Snarling, not the plugin, since Snarling owns the recording pipeline.
 
 ## API Endpoints
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/start-listening` | POST | gateway token | Start a recording. Returns `{status: "recording", duration: N}` |
-| `/audio-status` | GET | gateway token | Returns `{recording: bool, micDevice, transcriptionModel, authAvailable}` |
-| `/hooks/wake` | POST | hooks token | Used internally by the plugin to deliver transcripts and wake the agent |
+| `/transcribe-and-reply` | POST | gateway token | Receives `{wav_path}`, transcribes, spawns subagent, delivers answer to Snarling |
+| `/audio-status` | GET | gateway token | Returns `{version, transcriptionModel, authAvailable}` |
+| `/start-listening` | POST | gateway token | Deprecated — returns 410 with migration hint |
 
-### Start a recording manually
+### Trigger a transcription manually
 
 ```bash
-curl -X POST http://localhost:18789/start-listening \
+curl -X POST http://localhost:18789/transcribe-and-reply \
   -H "Authorization: Bearer <gateway-token>" \
   -H "Content-Type: application/json" \
-  -d '{"duration": 20}'
+  -d '{"wav_path": "/tmp/recording.wav"}'
 ```
 
-### Check recording status
+## Notification Delivery
 
-```bash
-curl http://localhost:18789/audio-status \
-  -H "Authorization: Bearer <gateway-token>"
+The subagent sends answers to Snarling's `/approval/alert` endpoint with `type: notification`:
+
+```json
+{
+  "type": "notification",
+  "message": "You said 7 numbers!",
+  "priority": "normal",
+  "secret": "voice-bridge"
+}
 ```
 
-## Agent Integration
-
-Voice transcripts arrive as system events:
-
-```
-🎤 Voice input: What's the weather like today?
-```
-
-Agents should **treat these as direct user messages** — respond naturally, as if the user typed the words in chat. Always relay the response as a notification to the Snarling display so there's visual confirmation.
-
-For full agent integration instructions, see [SKILL.md](./SKILL.md).
-
-## Recording Pipeline (v4)
-
-The v4 pipeline starts the microphone and OpenAI key resolution **in parallel**, eliminating the 5-6s front-clipping that occurred in earlier versions:
-
-```
-X button pressed
-     │
-     ├── isRecording = true
-     ├── 200 OK sent immediately
-     │
-     ├── arecord starts (82ms) ──────────▶ WAV file (20s)
-     │                                        │
-     └── resolveOpenAIKey (background) ────▶ API key ready
-                                              │
-                                    ┌─────────┴─────────┐
-                                    │  Transcribe WAV   │
-                                    │  via Whisper API  │
-                                    └─────────┬─────────┘
-                                              │
-                                    ┌─────────┴─────────┐
-                                    │  POST /hooks/wake  │
-                                    │  {text, mode:now}  │
-                                    └─────────┬─────────┘
-                                              │
-                                              ▼
-                                    Agent processes voice input
-```
+- `type: "notification"` — displays as a notification (no A/B buttons)
+- No `duration` — stays on display until manually dismissed
+- The secret authenticates with Snarling (shared between plugin and display)
 
 ## Transcription Models
 
@@ -215,35 +196,59 @@ X button pressed
 
 ## Troubleshooting
 
-### `/start-listening` returns 404
+### Voice input reaches Snarling but no answer appears
 
-The plugin isn't loading at startup. Add `hooks.allowConversationAccess: true` to its config in `openclaw.json` (see Installation step 2). Requires gateway restart.
+Check `/tmp/voice-bridge-debug.log` for the pipeline status:
+
+```bash
+tail -20 /tmp/voice-bridge-debug.log
+```
+
+Key lines to look for:
+- `Transcript: "..."` — transcription succeeded
+- `Spawning subagent for voice input` — subagent.run called
+- `Subagent spawned: runId=...` — subagent created
+- `Subagent wait: status=ok` — subagent completed successfully
+
+If you see `subagent.run not available`, the plugin fell back to the broken heartbeat path — check that the plugin is running on a recent OpenClaw version that exposes `api.runtime.subagent`.
+
+### `/transcribe-and-reply` returns 404
+
+The plugin isn't loading at startup. Add `hooks.allowConversationAccess: true` to its config in `openclaw.json`. Requires gateway restart.
 
 ### Voice transcript is empty or cut off
 
 - Check mic volume: `alsamixer -c 3` (card number from `arecord -l`)
 - Test directly: `arecord -D plughw:3,0 -f S16_LE -c 1 -r 24000 -d 5 /tmp/test.wav && aplay /tmp/test.wav`
-- If recording starts but transcript is truncated, increase `recordingDurationSec`
+- Snarling records for a fixed duration (default 20s) — if you speak too quickly after pressing X, the beginning may be captured
 
-### Agent doesn't respond to voice input
+### Notification shows as approval (A/B buttons) instead of plain text
 
-- Verify hooks are enabled in `openclaw.json` (`hooks.enabled: true` + `hooks.token`)
-- Check gateway logs for `/hooks/wake` response: should return `{"ok": true}`
-- System events are queued — if the agent is mid-turn, the transcript waits for the next turn
-
-### Front of recording is clipped (missing first words)
-
-This was fixed in v4 (parallel arecord + key resolution). If you're running an older version, update. After a gateway restart, the first recording may have a ~5s delay while the API key cache is cold — subsequent recordings start in ~82ms.
+Ensure the curl payload includes `"type": "notification"`. Without it, Snarling's `/approval/alert` endpoint defaults to the approval flow.
 
 ### esbuild rebuild breaks transcription
 
 ⚠️ **Do not rebuild `index.mjs` from `index.ts` via esbuild.** The esbuild output differs subtly from the hand-curated version and breaks transcription. Apply patches surgically to `index.mjs` directly.
 
+## Performance
+
+| Stage | Typical latency |
+|-------|----------------|
+| X press → arecord starts | ~82ms |
+| Recording (fixed duration) | 20s |
+| Snarling POSTs WAV to plugin | ~50ms |
+| API key resolution (cached) | ~1ms |
+| OpenAI transcription | ~2s |
+| Subagent run + answer + curl | ~3-5s |
+| **Total round trip** | **~25s** |
+
+First recording after restart may add ~5s for API key cache warming.
+
 ## v2026.5.18 Compatibility
 
 OpenClaw v2026.5.18 introduced breaking changes requiring manifest updates:
 
-1. **`contracts.tools` required** — plugins must declare tool names before `api.registerTool()` succeeds. This plugin declares `"contracts": { "tools": ["voice_record"] }` in its manifest.
+1. **`contracts.tools` required** — plugins must declare tool names before `api.registerTool()` succeeds. This plugin declares `"contracts": { "tools": [] }` (no tools, only HTTP routes).
 2. **`hooks.allowConversationAccess` required** — without this config, the plugin loads lazily and its HTTP routes are invisible to the server.
 3. **Schema defaults override code defaults** — if the manifest config schema has `"default": X`, it overrides `const FOO = Y` in the code. Keep both in sync.
 
