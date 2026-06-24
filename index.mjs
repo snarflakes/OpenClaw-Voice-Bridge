@@ -308,7 +308,12 @@ var index_default = definePluginEntry({
 `);
             } catch (_e) {
             }
-            await setSnarlingState("sleeping");
+            const errMsg = err instanceof Error ? err.message : String(err);
+            if (errMsg.includes("EAI_AGAIN") || errMsg.includes("ENETUNREACH") || errMsg.includes("fetch failed") || errMsg.includes("Transcription request failed")) {
+              await setSnarlingState("error");
+            } else {
+              await setSnarlingState("sleeping");
+            }
           }
         })();
         return true;
