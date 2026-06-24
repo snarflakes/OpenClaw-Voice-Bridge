@@ -2,7 +2,7 @@
   "name": "openclaw-voice-bridge",
   "version": "1.0.0",
   "description": "Record audio from USB mic on B button press, transcribe via gpt-4o-mini-transcribe, and inject transcript as user message",
-  "main": "index.mjs",
+  "main": "index.ts",
   "type": "module",
   "dependencies": {},
   "peerDependencies": {
@@ -10,7 +10,7 @@
   },
   "openclaw": {
     "extensions": [
-      "./index.mjs"
+      "./index.ts"
     ],
     "compat": {
       "pluginApi": ">=2026.3.24-beta.2",
