@@ -18,8 +18,8 @@ Push-to-talk voice input for OpenClaw, triggered by a hardware button on the Sna
 │  WAV file    │ ──────────────────────────────▶ │  Isolated Agent Turn │
 │  /tmp/voice_ │                                  │                      │
 │  recording.* │                                  │  Answers question    │
-└─────────────┘                                  │  curls Snarling      │
-                                                 │  /approval/alert     │
+└─────────────┘                                  │  send_notification   │
+                                                 │  to Snarling display │
                                                  └──────────┬───────────┘
                                                             │
                                                             ▼
@@ -37,14 +37,14 @@ Push-to-talk voice input for OpenClaw, triggered by a hardware button on the Sna
 3. After recording completes, Snarling POSTs the WAV path to `/transcribe-and-reply`
 4. The plugin transcribes via `gpt-4o-mini-transcribe` (~2s)
 5. The plugin calls `api.runtime.subagent.run()` with the transcript
-6. The subagent answers the question and curls the answer to Snarling's `/approval/alert` endpoint
+6. The subagent answers the question and sends the result to Snarling via the `send_notification` tool
 7. The answer appears on the Snarling display as a notification
 
 ### Why subagent.run?
 
 Previous approaches using `enqueueSystemEvent` + heartbeat wake were unreliable. The system event would enqueue and the heartbeat would report `status=ran`, but the event text never surfaced in the agent's context during the heartbeat turn (phantom heartbeat bug #86090). CLI-based injection via `openclaw system event --mode now` either deadlocked the event loop (`execSync`) or completed successfully but still didn't surface the event.
 
-`subagent.run` creates a real agent turn that can execute tools — the subagent uses `exec` to curl the answer directly to Snarling, bypassing the broken heartbeat wake path entirely.
+`subagent.run` creates a real agent turn that can execute tools — the subagent uses `send_notification` to deliver the answer directly to the Snarling display, bypassing the broken heartbeat wake path entirely.
 
 ## Hardware
 
@@ -171,7 +171,7 @@ curl -X POST http://localhost:18789/transcribe-and-reply \
 
 ## Notification Delivery
 
-The subagent sends answers to Snarling's `/approval/alert` endpoint with `type: notification`:
+The subagent sends answers to the Snarling display using the `send_notification` tool:
 
 ```json
 {
@@ -224,7 +224,7 @@ The plugin isn't loading at startup. Add `hooks.allowConversationAccess: true` t
 
 ### Notification shows as approval (A/B buttons) instead of plain text
 
-Ensure the curl payload includes `"type": "notification"`. Without it, Snarling's `/approval/alert` endpoint defaults to the approval flow.
+The `send_notification` tool automatically formats the notification correctly. If the subagent falls back to curling `/approval/alert` directly, ensure the payload includes `"type": "notification"`. Without it, Snarling's `/approval/alert` endpoint defaults to the approval flow.
 
 ### esbuild rebuild breaks transcription
 
@@ -251,6 +251,17 @@ OpenClaw v2026.5.18 introduced breaking changes requiring manifest updates:
 1. **`contracts.tools` required** — plugins must declare tool names before `api.registerTool()` succeeds. This plugin declares `"contracts": { "tools": [] }` (no tools, only HTTP routes).
 2. **`hooks.allowConversationAccess` required** — without this config, the plugin loads lazily and its HTTP routes are invisible to the server.
 3. **Schema defaults override code defaults** — if the manifest config schema has `"default": X`, it overrides `const FOO = Y` in the code. Keep both in sync.
+
+## Privacy
+
+⚠️ **Audio is sent to OpenAI for transcription.** When you press X, the recorded audio (WAV file) is transmitted to OpenAI's Whisper API (`api.openai.com/v1/audio/transcriptions`) for speech-to-text conversion. OpenAI may retain transcribed text per their API data retention policy.
+
+- **What's sent:** The raw WAV audio recording (~20 seconds)
+- **Where it goes:** OpenAI's servers (US-based)
+- **What's retained:** Check [OpenAI's API data usage policy](https://openai.com/policies/api-data-usage/)
+- **Local data:** The WAV file is deleted after transcription. Debug logs (if enabled) do not contain audio or full API keys.
+
+To avoid sending audio to OpenAI, you can use a local transcription model by changing the `transcriptionModel` config — but this requires a self-hosted Whisper endpoint.
 
 ## License
 
