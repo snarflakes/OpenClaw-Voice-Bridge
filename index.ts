@@ -1,13 +1,26 @@
 // /home/openpi/.openclaw/extensions/openclaw-voice-bridge/index.ts
-// Voice Bridge Plugin v3 — Snarling owns recording, plugin owns transcription + injection
+// Voice Bridge Plugin v3 — Snarling owns recording, plugin owns transcription + subagent injection
 //
 // Flow: snarling X press → arecord (in snarling thread) → POST wav_path to /transcribe-and-reply
-// Plugin: receives wav_path → transcribes via OpenAI → enqueues system event → requests heartbeat
+// Plugin: receives wav_path → transcribes via OpenAI → subagent.run() → send_notification to display
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { readFile, unlink } from "fs/promises";
+import { readFile } from "fs/promises";
 import { appendFileSync } from "fs";
 import { randomUUID } from "crypto";
+
+// Debug logging — opt-in via VOICE_BRIDGE_DEBUG env var
+const DEBUG = process.env.VOICE_BRIDGE_DEBUG === "1" || process.env.VOICE_BRIDGE_DEBUG === "true";
+const DEBUG_LOG = process.env.VOICE_BRIDGE_DEBUG_LOG || "/tmp/voice-bridge-debug.log";
+function debugLog(msg: string): void {
+  if (!DEBUG) return;
+  const redacted = msg
+    .replace(/sk-[a-zA-Z0-9]{10,}/g, "sk-***REDACTED***")
+    .replace(/ghp_[a-zA-Z0-9]{10,}/g, "ghp_***REDACTED***")
+    .replace(/Bearer\s+[a-zA-Z0-9._-]{10,}/gi, "Bearer ***REDACTED***")
+    .replace(/[a-f0-9]{32,}/gi, "***REDACTED***");
+  try { appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${redacted}\n`); } catch {}
+}
 
 const SNARLING_URL = "http://localhost:5000/state";
 const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
@@ -55,12 +68,12 @@ async function resolveOpenAIKey(runtime: any): Promise<string | null> {
       if (auth?.apiKey) {
         cachedApiKey = auth.apiKey;
         console.info(`[openclaw-voice-bridge] Resolved OpenAI key via modelAuth (source: ${auth.source || "unknown"})`);
-        try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Resolved key via modelAuth (source: ${auth.source || "unknown"})\n`); } catch(_e) {}
+        debugLog(`Resolved key via modelAuth (source: ${auth.source || "unknown"})`);
         return auth.apiKey;
       }
     } catch (e: any) {
       console.error(`[openclaw-voice-bridge] modelAuth resolution failed: ${e?.message || String(e)}`);
-      try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} modelAuth failed: ${e?.message || String(e)}\n`); } catch(_e) {}
+      debugLog(`modelAuth failed: ${e?.message || String(e)}`);
     }
   }
 
@@ -70,7 +83,7 @@ async function resolveOpenAIKey(runtime: any): Promise<string | null> {
     if (key) {
       cachedApiKey = key;
       console.info(`[openclaw-voice-bridge] Resolved OpenAI key via auth.resolveKey`);
-      try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Resolved key via auth.resolveKey\n`); } catch(_e) {}
+      debugLog("Resolved key via auth.resolveKey");
       return key;
     }
   } catch (_e) {}
@@ -80,12 +93,12 @@ async function resolveOpenAIKey(runtime: any): Promise<string | null> {
   if (envKey) {
     cachedApiKey = envKey;
     console.info("[openclaw-voice-bridge] Resolved OpenAI key from process.env");
-    try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Resolved key from process.env\n`); } catch(_e) {}
+    debugLog("Resolved key from process.env");
     return envKey;
   }
 
   console.warn("[openclaw-voice-bridge] No OpenAI API key available");
-  try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} No OpenAI key available\n`); } catch(_e) {}
+  debugLog("No OpenAI key available");
   return null;
 }
 
@@ -175,7 +188,7 @@ export default definePluginEntry({
         return true;
       }
 
-      try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} /transcribe-and-reply wav_path=${wavPath}\n`); } catch(_e) {}
+      debugLog(`/transcribe-and-reply wav_path=${wavPath}`);
 
       // Respond immediately
       res.statusCode = 200;
@@ -185,11 +198,11 @@ export default definePluginEntry({
       (async () => {
         try {
           const apiKey = await resolveOpenAIKey(api.runtime);
-          try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} API key resolved: ${apiKey ? apiKey.slice(0,8) + "..." + apiKey.slice(-4) : "null"}, api.runtime: ${typeof api?.runtime}, api.runtime.auth: ${typeof api?.runtime?.auth}, api.runtime.auth.resolveKey: ${typeof api?.runtime?.auth?.resolveKey}\n`); } catch(_e) {}
+          debugLog("API key resolved (redacted)");
 
           if (!apiKey) {
             console.warn("[openclaw-voice-bridge] No OpenAI API key available");
-            try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} No OpenAI key\n`); } catch(_e) {}
+            debugLog("No OpenAI key");
             await setSnarlingState("sleeping");
             return;
           }
@@ -197,10 +210,10 @@ export default definePluginEntry({
           // Show thinking state
           await setSnarlingState("processing");
 
-          try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Starting transcription of ${wavPath}\n`); } catch(_e) {}
+          debugLog(`Starting transcription of ${wavPath}`);
           const transcript = await transcribeAudio(wavPath, apiKey, DEFAULT_TRANSCRIPTION_MODEL);
           console.info(`[openclaw-voice-bridge] Transcript: "${transcript}"`);
-          try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Transcript: "${transcript}"\n`); } catch(_e) {}
+          debugLog(`Transcript: "${transcript}"`);
 
           if (!transcript) {
             console.info("[openclaw-voice-bridge] Empty transcript, nothing to send");
@@ -209,14 +222,9 @@ export default definePluginEntry({
           }
 
           // Strategy: Use subagent.run to spawn an isolated agent turn.
-          // The subagent answers the question and POSTs the result to Snarling's
-          // /approval/alert endpoint via exec+curl. This bypasses the broken
-          // heartbeat wake path entirely (phantom heartbeat bug #86090 where
-          // enqueueSystemEvent enqueues but the event never surfaces in agent
-          // context during heartbeat turns).
-          //
-          // The subagent doesn't need send_notification tool — it uses exec to
-          // curl the snarling notification endpoint directly.
+          // The subagent answers the question and uses send_notification to push
+          // the result to the Snarling display. This bypasses the broken heartbeat
+          // wake path (phantom heartbeat bug #86090).
           const voiceText = `🎤 Voice input: ${transcript}`;
           const sessionKey = "agent:main:main";
 
@@ -232,7 +240,7 @@ export default definePluginEntry({
                 `Call send_notification with your answer as the message and priority "normal".`,
               ].join('\n');
 
-              try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Spawning subagent for voice input\n`); } catch(_e) {}
+              debugLog("Spawning subagent for voice input");
 
               const result = await subagent.run({
                 sessionKey,
@@ -242,36 +250,36 @@ export default definePluginEntry({
 
               const runId = result?.runId ?? 'unknown';
               console.info(`[openclaw-voice-bridge] Subagent spawned: runId=${runId}`);
-              try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Subagent spawned: runId=${runId}\n`); } catch(_e) {}
+              debugLog(`Subagent spawned: runId=${runId}`);
 
               // Optionally wait for completion (best effort, don't block too long)
               if (subagent.waitForRun) {
                 try {
                   const waitResult = await subagent.waitForRun({ runId, timeoutMs: 45000 });
                   const status = waitResult?.status ?? 'unknown';
-                  try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Subagent wait: status=${status} error=${waitResult?.error || 'none'}\n`); } catch(_e) {}
+                  debugLog(`Subagent wait: status=${status} error=${waitResult?.error || 'none'}`);
                   console.info(`[openclaw-voice-bridge] Subagent completed: ${status}`);
                 } catch (we: any) {
-                  try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Subagent wait error: ${we?.message}\n`); } catch(_e) {}
+                  debugLog(`Subagent wait error: ${we?.message}`);
                 }
               }
             } else {
               // Fallback: enqueue system event if subagent.run not available
-              try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} subagent.run not available, falling back to enqueueSystemEvent\n`); } catch(_e) {}
+              debugLog("subagent.run not available, falling back to enqueueSystemEvent");
               const systemApi = (api.runtime as any)?.system;
               if (systemApi?.enqueueSystemEvent) {
                 systemApi.enqueueSystemEvent(voiceText, { sessionKey });
-                try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Enqueued into ${sessionKey} (fallback)\n`); } catch(_e) {}
+                debugLog(`Enqueued into ${sessionKey} (fallback)`);
               }
               if (systemApi?.runHeartbeatOnce) {
                 const result = await systemApi.runHeartbeatOnce({ heartbeat: { target: "last" } });
-                try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} runHeartbeatOnce: status=${result?.status} (fallback)\n`); } catch(_e) {}
+                debugLog(`runHeartbeatOnce: status=${result?.status} (fallback)`);
               }
             }
 
           } catch (err: any) {
             console.error(`[openclaw-voice-bridge] Subagent error: ${err?.message || err}`);
-            try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Subagent error: ${err?.message || err}\n`); } catch(_e) {}
+            debugLog(`Subagent error: ${err?.message || err}`);
           }
 
           // Go back to sleeping
@@ -279,7 +287,7 @@ export default definePluginEntry({
 
         } catch (err) {
           console.error(`[openclaw-voice-bridge] Error: ${err instanceof Error ? err.message : String(err)}`);
-          try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} ERROR: ${err instanceof Error ? err.message + ' | ' + err.stack : String(err)}\n`); } catch(_e) {}
+          debugLog(`ERROR: ${err instanceof Error ? err.message + ' | ' + err.stack : String(err)}`);
           await setSnarlingState("sleeping");
         }
       })();
