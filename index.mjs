@@ -1,3 +1,5 @@
+// index.ts
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { readFile } from "fs/promises";
 import { appendFileSync } from "fs";
 import { randomUUID } from "crypto";
