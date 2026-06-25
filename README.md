@@ -224,7 +224,7 @@ The plugin isn't loading at startup. Add `hooks.allowConversationAccess: true` t
 
 ### Notification shows as approval (A/B buttons) instead of plain text
 
-The `send_notification` tool automatically formats the notification correctly. If the subagent falls back to curling `/approval/alert` directly, ensure the payload includes `"type": "notification"`. Without it, Snarling's `/approval/alert` endpoint defaults to the approval flow.
+The `send_notification` tool automatically formats the notification correctly. If `subagent.run` is unavailable, the plugin falls back to `enqueueSystemEvent` (which may not deliver reliably — see phantom heartbeat bug #86090). There is no curl fallback path.
 
 ### esbuild rebuild breaks transcription
 
@@ -239,7 +239,7 @@ The `send_notification` tool automatically formats the notification correctly. I
 | Snarling POSTs WAV to plugin | ~50ms |
 | API key resolution (cached) | ~1ms |
 | OpenAI transcription | ~2s |
-| Subagent run + answer + curl | ~3-5s |
+| Subagent run + answer + send_notification | ~3-5s |
 | **Total round trip** | **~25s** |
 
 First recording after restart may add ~5s for API key cache warming.
