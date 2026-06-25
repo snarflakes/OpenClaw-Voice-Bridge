@@ -228,11 +228,8 @@ export default definePluginEntry({
                 `"${transcript}"`,
                 ``,
                 `Answer briefly and naturally (under 80 chars if possible).`,
-                `Then send the answer to the Snarling display by running this curl command:`,
-                `curl -s -X POST http://localhost:5000/approval/alert -H "Content-Type: application/json" -d '{"type":"notification","message":"<YOUR_ANSWER>","priority":"normal","secret":"voice-bridge"}'`,
-                ``,
-                `Replace <YOUR_ANSWER> with your actual answer (URL-escape quotes).`,
-                `Do NOT use send_notification. Use the curl command above.`,
+                `Then send the answer to the Snarling display using the send_notification tool.`,
+                `Call send_notification with your answer as the message and priority "normal".`,
               ].join('\n');
 
               try { appendFileSync("/tmp/voice-bridge-debug.log", `${new Date().toISOString()} Spawning subagent for voice input\n`); } catch(_e) {}
