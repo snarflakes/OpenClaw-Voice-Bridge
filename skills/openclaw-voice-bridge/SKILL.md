@@ -1,6 +1,6 @@
 ---
 name: openclaw-voice-bridge
-description: "Push-to-talk voice input via Snarling hardware button and USB mic. Records audio, transcribes via Whisper, and injects the transcript as a system event for the agent to respond to. Includes Snarling display notification relay for visual confirmation."
+description: "Push-to-talk voice input via Snarling hardware button and USB mic. Snarling records audio, plugin transcribes via OpenAI Whisper, then spawns a subagent that answers and sends the result to the Snarling display via send_notification."
 type: code-plugin
 envVars:
   - OPENAI_API_KEY
@@ -8,11 +8,11 @@ envVars:
 
 # OpenClaw Voice Bridge
 
-> Push-to-talk voice input via Snarling hardware button + USB mic → Whisper transcription → agent system event (instant wake via /hooks/wake)
+> Push-to-talk voice input via Snarling hardware button + USB mic → Whisper transcription → subagent.run() → send_notification to Snarling display
 
 ## What It Does
 
-When a user presses the **X button** on a Snarling display, the hardware sends a POST to `/start-listening` on the OpenClaw gateway. The voice bridge plugin records 20 seconds of audio from the USB mic, transcribes it via OpenAI Whisper (`gpt-4o-mini-transcribe`), and injects the transcript as a system event via `/hooks/wake` — which enqueues the text AND triggers an immediate agent heartbeat. The agent sees the voice input within ~2s of recording completion.
+When a user presses the **X button** on a Snarling display, Snarling records 20 seconds of audio from the USB mic in its own thread, then POSTs the WAV file path to the plugin's `/transcribe-and-reply` endpoint. The voice bridge plugin transcribes via OpenAI Whisper (`gpt-4o-mini-transcribe`), then calls `api.runtime.subagent.run()` with the transcript. The subagent answers the question and sends the result to the Snarling display via the `send_notification` tool.
 
 ## v2026.5.18+ Requirements
 
@@ -37,15 +37,17 @@ Voice transcripts arrive as system events in the format:
 
 ## Responding to Voice Input
 
-**Always relay your response as a notification to Snarling** so the user gets visual confirmation on the display. After processing the voice transcript:
+**Always relay your response as a notification to Snarling** so the user gets visual confirmation on the display. The subagent spawned by the voice bridge uses the `send_notification` tool:
 
-1. Respond to the voice input normally in the current session
-2. Send the response (or a summary) via `send_notification` so it appears on the Snarling display
+1. The voice bridge spawns a subagent via `api.runtime.subagent.run()` with the transcript
+2. The subagent answers the question
+3. The subagent calls `send_notification` with the answer as the message and priority `"normal"`
+4. The answer appears on the Snarling display
 
-Example:
+Example subagent behavior:
 - Voice input: `🎤 Voice input: What's the weather?`
-- Agent processes the question
-- Agent sends: `send_notification(message: "🌤️ LA: Clear, 68°F", priority: "low")`
+- Subagent processes the question
+- Subagent sends: `send_notification(message: "🌤️ LA: Clear, 68°F", priority: "low")`
 
 Keep notification messages under 80 characters (Snarling display limit). For longer responses, summarize the key point in the notification and give the full answer in chat.
 
@@ -53,39 +55,17 @@ Keep notification messages under 80 characters (Snarling display limit). For lon
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/start-listening` | POST | gateway token | Start a recording (default 20s, max 30s). Returns `{status: "recording", duration: N}` |
-| `/audio-status` | GET | gateway token | Returns `{recording: bool, micDevice, transcriptionModel, authAvailable}` |
+| `/transcribe-and-reply` | POST | gateway token | Receives `{wav_path}`, transcribes, spawns subagent, delivers answer to Snarling display |
+| `/audio-status` | GET | gateway token | Returns `{version, transcriptionModel, authAvailable}` |
+| `/start-listening` | POST | gateway token | **Deprecated (410)** — use `/transcribe-and-reply` with `wav_path` |
 
-### Starting a Recording
+### Trigger a transcription manually
 
 ```bash
-curl -X POST http://localhost:18789/start-listening \
+curl -X POST http://localhost:18789/transcribe-and-reply \
   -H "Authorization: Bearer <gateway-token>" \
   -H "Content-Type: application/json" \
-  -d '{"duration": 20}'
-```
-
-Duration is optional (default: 20s, max: 30s).
-
-## Wake: POST /hooks/wake
-
-After transcription, the plugin calls `POST /hooks/wake { text: transcript, mode: "now" }` which:
-
-1. Enqueues the transcript as a system event in the main session
-2. Triggers an immediate agent heartbeat
-
-This is a **single-call** pattern — no separate `enqueueSystemEvent` needed. The agent wakes and processes the voice input within ~2s.
-
-**Auth**: Requires `Authorization: Bearer <hooks-token>` (distinct from gateway admin token).
-
-**Config required** (in `openclaw.json`):
-```json
-{
-  "hooks": {
-    "enabled": true,
-    "token": "<hooks-token>"
-  }
-}
+  -d '{"wav_path": "/tmp/recording.wav"}'
 ```
 
 ## Snarling Button Mapping
@@ -99,18 +79,32 @@ This is a **single-call** pattern — no separate `enqueueSystemEvent` needed. T
 
 The X button only triggers voice input when no approval or notification is active.
 
-## Recording Pipeline (v4)
+## Recording Pipeline (v5)
 
-The v4 pipeline starts arecord and OpenAI key resolution **in parallel** — mic begins recording within ~82ms of button press (vs 5-6s delay in earlier versions):
+The v5 pipeline uses `subagent.run()` to create an isolated agent turn, which then uses `send_notification` to deliver the answer to the Snarling display:
 
-1. X press → snarling POST to `/start-listening`
-2. Handler sets `isRecording=true`, sends 200 OK, kicks off two parallel promises:
-   - `recordAudio(micDevice, 20s, wavPath)` — arecord starts immediately
-   - `resolveOpenAIKey(runtime)` — resolves in background (~5s)
-3. Both promises await separately — recording completes regardless of key resolution time
-4. Transcription via `gpt-4o-mini-transcribe` (~2s)
-5. `POST /hooks/wake { text: transcript, mode: "now" }` — instant agent wake
-6. Snarling state set back to sleeping
+1. **X press** → Snarling starts `arecord` immediately in a background thread (~82ms latency)
+2. **Recording** → Snarling records 20s of audio to a WAV file
+3. **POST wav_path** → Snarling POSTs the file path to `/transcribe-and-reply`
+4. **Transcription** → Plugin transcribes via `gpt-4o-mini-transcribe` (~2s)
+5. **subagent.run()** → Plugin calls `api.runtime.subagent.run()` with the transcript
+6. **send_notification** → The subagent answers the question and calls `send_notification` to display the result on Snarling
+7. **Sleep** → Snarling state set back to sleeping
+
+### Why subagent.run?
+
+Previous approaches using `enqueueSystemEvent` + heartbeat wake were unreliable. The system event would enqueue and the heartbeat would report `status=ran`, but the event text never surfaced in the agent's context during the heartbeat turn (phantom heartbeat bug #86090). The subagent approach creates a real agent turn that can execute tools — specifically `send_notification` — to deliver answers directly to the display.
+
+## Privacy
+
+⚠️ **Audio is sent to OpenAI for transcription.** When you press X, the recorded audio (WAV file) is transmitted to OpenAI's Whisper API (`api.openai.com/v1/audio/transcriptions`) for speech-to-text conversion. OpenAI may retain transcribed text per their API data retention policy.
+
+- **What's sent:** The raw WAV audio recording (~20 seconds)
+- **Where it goes:** OpenAI's servers (US-based)
+- **What's retained:** Check [OpenAI's API data usage policy](https://openai.com/policies/api-data-usage/)
+- **Local data:** The WAV file is deleted after transcription. Debug logs (if enabled) do not contain audio or full API keys.
+
+To avoid sending audio to OpenAI, you can use a local transcription model by changing the `transcriptionModel` config — but this requires a self-hosted Whisper endpoint.
 
 ## Known Limitations
 
@@ -128,7 +122,17 @@ The v4 pipeline starts arecord and OpenAI key resolution **in parallel** — mic
 
 ## Debugging
 
-Debug logs at `/tmp/voice-bridge-debug.log` (when enabled in plugin code). WAV files are created at `/tmp/voice_recording.wav.<timestamp>.wav` during recording and deleted after transcription.
+Debug logging is **opt-in** and disabled by default. To enable:
+
+```bash
+export VOICE_BRIDGE_DEBUG=1
+# Optional: override the log file path
+export VOICE_BRIDGE_DEBUG_LOG=/tmp/voice-bridge-debug.log
+```
+
+When enabled, debug logs are written to `VOICE_BRIDGE_DEBUG_LOG` (default: `/tmp/voice-bridge-debug.log`). All potentially sensitive values (API keys, tokens, bearer strings) are automatically redacted.
+
+WAV files are created at `/tmp/voice_recording.wav.<timestamp>.wav` during recording and deleted after transcription.
 
 After code changes to the plugin, a **full process restart** is required (`systemctl --user restart openclaw-gateway`). SIGUSR1 hot-reload only reloads config, not plugin code.
 
