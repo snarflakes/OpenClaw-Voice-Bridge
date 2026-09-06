@@ -189,18 +189,16 @@ var index_default = definePluginEntry({
               const subagent = api.runtime?.subagent;
               if (subagent?.run) {
                 const subagentPrompt = [
-                  "You are a voice assistant. Snar just spoke into a device and said:",
-                  `"${transcript}"`,
+                  "🎤 Voice input: " + transcript,
                   "",
-                  "Answer briefly and naturally (under 80 chars if possible).",
-                  "Then send the answer to the Snarling display using the send_notification tool.",
-                  "Call send_notification with your answer as the message and priority \"normal\".",
+                  "Answer using your full context. If you say you'll do something, do it in this turn — use your tools.",
+                  "Keep the Snarling display notification under 80 chars, but you can do more work after sending it.",
+                  "Send a notification to the Snarling display using send_notification (priority \"normal\") with your answer.",
                 ].join("\n");
-                debugLog("Spawning subagent for voice input");
+                debugLog("Spawning subagent for voice input with full context");
                 const result = await subagent.run({
                   sessionKey,
-                  message: subagentPrompt,
-                  lightContext: true
+                  message: subagentPrompt
                 });
                 const runId = result?.runId ?? "unknown";
                 console.info(`[openclaw-voice-bridge] Subagent spawned: runId=${runId}`);
