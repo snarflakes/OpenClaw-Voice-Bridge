@@ -49,7 +49,7 @@ Example subagent behavior:
 - Subagent processes the question
 - Subagent sends: `send_notification(message: "🌤️ LA: Clear, 68°F", priority: "low")`
 
-Keep notification messages under 80 characters (Snarling display limit). For longer responses, summarize the key point in the notification and give the full answer in chat.
+Keep notification messages under 160 characters (Snarling shows ~2 banner pages; the banner rotates every 3s). For longer responses, summarize the key point in the notification and give the full answer in chat.
 
 ## API Endpoints
 

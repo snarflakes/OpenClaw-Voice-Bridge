@@ -192,7 +192,7 @@ var index_default = definePluginEntry({
                   "🎤 Voice input: " + transcript,
                   "",
                   "Answer using your full context. If you say you'll do something, do it in this turn — use your tools.",
-                  "Keep the Snarling display notification under 80 chars, but you can do more work after sending it.",
+                  "Keep the Snarling display notification under 160 chars, but you can do more work after sending it.",
                   "Send a notification to the Snarling display using send_notification (priority \"normal\") with your answer.",
                 ].join("\n");
                 debugLog("Spawning subagent for voice input with full context");
