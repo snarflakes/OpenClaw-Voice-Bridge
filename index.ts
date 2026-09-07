@@ -235,7 +235,7 @@ export default definePluginEntry({
                 `You are a voice assistant. Snar just spoke into a device and said:`,
                 `"${transcript}"`,
                 ``,
-                `Answer briefly and naturally (under 80 chars if possible).`,
+                `Answer briefly and naturally (under 160 chars if possible).`,
                 `Then send the answer to the Snarling display using the send_notification tool.`,
                 `Call send_notification with your answer as the message and priority "normal".`,
               ].join('\n');

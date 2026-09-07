@@ -11,8 +11,8 @@ Push-to-talk voice input for OpenClaw, triggered by a hardware button on the Sna
 │  Display     │ ◀─── { status: "transcribing" } │  1. Resolve API key  │
 └─────────────┘                                  │  2. Transcribe WAV   │
        │                                         │  3. subagent.run()   │
-       │  arecord (in snarling thread)           └──────────┬───────────┘
-       │  20s @ 24kHz mono                                   │
+       │  arecord + Silero VAD (snarling)           └──────────┬───────────┘
+       │  speech-length @ 16kHz                                   │
        ▼                                                     ▼
 ┌─────────────┐                                  ┌──────────────────────┐
 │  WAV file    │ ──────────────────────────────▶ │  Isolated Agent Turn │
@@ -53,7 +53,7 @@ Previous approaches using `enqueueSystemEvent` + heartbeat wake were unreliable.
 | **Computer** | Raspberry Pi 4 or higher (recommended) |
 | **Display** | Pimoroni Display HAT Mini (320×240 IPS) |
 | **Microphone** | USB PnP Sound Device (`plughw:3,0`) |
-| **Audio format** | 24kHz, 16-bit little-endian, mono (WAV) |
+| **Audio format** | 16kHz, 16-bit little-endian, mono (WAV) — Silero VAD–controlled capture |
 | **Trigger** | X button on Snarling display |
 
 The USB mic plugs directly into the Pi. The Pimoroni Display HAT Mini sits on the Pi's GPIO header and runs the Snarling software, which renders the UI and handles button input.
@@ -188,7 +188,7 @@ The subagent sends answers to the Snarling display using the `send_notification`
 
 ## Transcription Models
 
-| Model | Latency | Cost/20s | Quality | Best Use |
+| Model | Latency | Cost (~10s utterance) | Quality | Best Use |
 |-------|---------|----------|---------|----------|
 | `gpt-4o-mini-transcribe` | ~2s | ~$0.006 | Very good | Default — best value |
 | `gpt-4o-transcribe` | ~3-5s | ~$0.012 | Best | Noisy environments |
@@ -219,12 +219,27 @@ The plugin isn't loading at startup. Add `hooks.allowConversationAccess: true` t
 ### Voice transcript is empty or cut off
 
 - Check mic volume: `alsamixer -c 3` (card number from `arecord -l`)
-- Test directly: `arecord -D plughw:3,0 -f S16_LE -c 1 -r 24000 -d 5 /tmp/test.wav && aplay /tmp/test.wav`
-- Snarling records for a fixed duration (default 20s) — if you speak too quickly after pressing X, the beginning may be captured
+- Test directly: `arecord -D plughw:3,0 -f S16_LE -c 1 -r 16000 -d 5 /tmp/test.wav && aplay /tmp/test.wav`
+- Recording is VAD-controlled (starts on speech, stops after ~1.5s silence). If the transcript cuts off mid-word, raise `VAD_SILENCE_STOP_SEC` in snarling (default 1.5s); if it misses the start of speech, raise `VAD_PRE_ROLL_SEC` (default 0.4s)
 
 ### Notification shows as approval (A/B buttons) instead of plain text
 
 The `send_notification` tool automatically formats the notification correctly. If `subagent.run` is unavailable, the plugin falls back to `enqueueSystemEvent` (which may not deliver reliably — see phantom heartbeat bug #86090). There is no curl fallback path.
+
+### Subagent sometimes doesn't call send_notification (intermittent)
+
+**Observed:** July 9, 2026 — X presses #2 and #3 both transcribed correctly and spawned subagents that reported `completed: ok`, but the subagent never called `send_notification`. The answer was never delivered to the display. Press #1 (same session) worked fine, and a later manual re-trigger also worked.
+
+**Root cause:** The subagent is launched with `lightContext: true` and a minimal prompt that says "Answer briefly and naturally. Then send the answer to the Snarling display using the send_notification tool." The subagent sometimes decides to just return text without calling the tool — this is model non-determinism. When it skips `send_notification`, the text response goes nowhere visible on the display.
+
+**Evidence:** Gateway logs show `Subagent completed: ok` for all three presses, but `notification-tool` entries only appear for presses #1 and the manual re-trigger. Presses #2 and #3 have no `send_notification` call in the logs.
+
+**Fix options:**
+1. Have the voice bridge plugin send the notification directly after `subagent.waitForRun()` returns, instead of relying on the subagent to do it. This makes delivery deterministic.
+2. Add stronger prompt instructions or tool-use enforcement to force `send_notification`.
+3. Validate subagent output for a notification delivery confirmation and retry if missing.
+
+Option 1 is the most robust — the plugin should own delivery, not delegate it to a subagent that may or may not comply.
 
 ### esbuild rebuild breaks transcription
 
@@ -235,12 +250,13 @@ The `send_notification` tool automatically formats the notification correctly. I
 | Stage | Typical latency |
 |-------|----------------|
 | X press → arecord starts | ~82ms |
-| Recording (fixed duration) | 20s |
+| VAD wait for speech onset | ~0.3–1s (until you start speaking) |
+| Recording (speech + 1.5s trailing silence) | ~3–10s typical, 30s max |
 | Snarling POSTs WAV to plugin | ~50ms |
 | API key resolution (cached) | ~1ms |
 | OpenAI transcription | ~2s |
 | Subagent run + answer + send_notification | ~3-5s |
-| **Total round trip** | **~25s** |
+| **Total round trip** | **~8–18s typical** |
 
 First recording after restart may add ~5s for API key cache warming.
 
@@ -256,7 +272,7 @@ OpenClaw v2026.5.18 introduced breaking changes requiring manifest updates:
 
 ⚠️ **Audio is sent to OpenAI for transcription.** When you press X, the recorded audio (WAV file) is transmitted to OpenAI's Whisper API (`api.openai.com/v1/audio/transcriptions`) for speech-to-text conversion. OpenAI may retain transcribed text per their API data retention policy.
 
-- **What's sent:** The raw WAV audio recording (~20 seconds)
+- **What's sent:** The raw WAV audio recording — only your speech plus ~0.4s pre-roll and ~1.5s trailing silence (typically a few seconds, 30s maximum; no fixed 20-second capture)
 - **Where it goes:** OpenAI's servers (US-based)
 - **What's retained:** Check [OpenAI's API data usage policy](https://openai.com/policies/api-data-usage/)
 - **Local data:** The WAV file is deleted after transcription. Debug logs (if enabled) do not contain audio or full API keys.

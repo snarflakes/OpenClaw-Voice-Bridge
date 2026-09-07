@@ -12,7 +12,7 @@ envVars:
 
 ## What It Does
 
-When a user presses the **X button** on a Snarling display, Snarling records 20 seconds of audio from the USB mic in its own thread, then POSTs the WAV file path to the plugin's `/transcribe-and-reply` endpoint. The voice bridge plugin transcribes via OpenAI Whisper (`gpt-4o-mini-transcribe`), then calls `api.runtime.subagent.run()` with the transcript. The subagent answers the question and sends the result to the Snarling display via the `send_notification` tool.
+When a user presses the **X button** on a Snarling display, Snarling records speech-controlled audio from the USB mic in its own thread (Silero VAD — starts on speech, stops ~1.5s after speech ends, 30s max), then POSTs the WAV file path to the plugin's `/transcribe-and-reply` endpoint. The voice bridge plugin transcribes via OpenAI Whisper (`gpt-4o-mini-transcribe`), then calls `api.runtime.subagent.run()` with the transcript. The subagent answers the question and sends the result to the Snarling display via the `send_notification` tool.
 
 ## v2026.5.18+ Requirements
 
@@ -49,7 +49,7 @@ Example subagent behavior:
 - Subagent processes the question
 - Subagent sends: `send_notification(message: "🌤️ LA: Clear, 68°F", priority: "low")`
 
-Keep notification messages under 80 characters (Snarling display limit). For longer responses, summarize the key point in the notification and give the full answer in chat.
+Keep notification messages under 160 characters (Snarling shows ~2 banner pages; the banner rotates every 3s). For longer responses, summarize the key point in the notification and give the full answer in chat.
 
 ## API Endpoints
 
@@ -84,7 +84,7 @@ The X button only triggers voice input when no approval or notification is activ
 The v5 pipeline uses `subagent.run()` to create an isolated agent turn, which then uses `send_notification` to deliver the answer to the Snarling display:
 
 1. **X press** → Snarling starts `arecord` immediately in a background thread (~82ms latency)
-2. **Recording** → Snarling records 20s of audio to a WAV file
+2. **Recording** → Snarling records speech-length audio to a WAV file (VAD-trimmed, 16 kHz mono)
 3. **POST wav_path** → Snarling POSTs the file path to `/transcribe-and-reply`
 4. **Transcription** → Plugin transcribes via `gpt-4o-mini-transcribe` (~2s)
 5. **subagent.run()** → Plugin calls `api.runtime.subagent.run()` with the transcript
@@ -99,7 +99,7 @@ Previous approaches using `enqueueSystemEvent` + heartbeat wake were unreliable.
 
 ⚠️ **Audio is sent to OpenAI for transcription.** When you press X, the recorded audio (WAV file) is transmitted to OpenAI's Whisper API (`api.openai.com/v1/audio/transcriptions`) for speech-to-text conversion. OpenAI may retain transcribed text per their API data retention policy.
 
-- **What's sent:** The raw WAV audio recording (~20 seconds)
+- **What's sent:** The raw WAV audio recording — only the speech window plus short pre-roll/tail (no fixed 20-second capture)
 - **Where it goes:** OpenAI's servers (US-based)
 - **What's retained:** Check [OpenAI's API data usage policy](https://openai.com/policies/api-data-usage/)
 - **Local data:** The WAV file is deleted after transcription. Debug logs (if enabled) do not contain audio or full API keys.
