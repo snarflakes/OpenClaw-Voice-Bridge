@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 (2026-09-16)
 
 - Security-scan fix: debug toggles moved from env vars (`VOICE_BRIDGE_DEBUG` / `VOICE_BRIDGE_DEBUG_LOG`) to plugin config (`debugEnabled` / `debugLogPath`) — clears the `suspicious.env_credential_access` finding.
 - Manifest: `envVars` moved to the supported `setup.providers[].envVars` shape (clears the "unsupported top-level fields" warning).
