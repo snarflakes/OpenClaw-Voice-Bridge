@@ -86,12 +86,7 @@ Snarling's `trigger_voice_input()` method records audio and POSTs the file path 
 openclaw plugins install clawhub:openclaw-voice-bridge
 ```
 
-Or clone from GitHub and link manually:
-
-```bash
-git clone -b development https://github.com/snarflakes/OpenClaw-Voice-Bridge.git \
-  ~/.openclaw/extensions/openclaw-voice-bridge
-```
+Updates come through the tracked install: `openclaw plugins update openclaw-voice-bridge` (or `openclaw plugins update --all`). If your installation uses a restrictive `plugins.allow` list, allow the plugin id `openclaw-voice-bridge`; enabling the plugin in the Control UI records it into an existing allowlist automatically.
 
 ### 2. Enable the plugin in `openclaw.json`
 
@@ -116,7 +111,7 @@ The plugin needs:
 | Variable | Purpose |
 |----------|---------|
 | `OPENAI_API_KEY` | Transcription API access (resolved via OpenClaw auth runtime) |
-| `OPENCLAW_GATEWAY_TOKEN` | Gateway auth (declared in manifest `envVars`) |
+
 
 The OpenAI key is resolved at runtime via `api.runtime.modelAuth.resolveApiKeyForProvider` — no need to hardcode it.
 

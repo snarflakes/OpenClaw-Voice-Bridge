@@ -2,6 +2,7 @@
   "id": "openclaw-voice-bridge",
   "name": "OpenClaw Voice Bridge",
   "description": "Receives WAV audio paths from snarling, transcribes via OpenAI, and injects the transcript into the agent session. Snarling owns recording; this plugin owns transcription and delivery.",
+  "categories": ["voice"],
   "envVars": ["OPENAI_API_KEY"],
   "contracts": {
     "tools": []
