@@ -181,6 +181,8 @@ The subagent sends answers to the Snarling display using the `send_notification`
 - No `duration` — stays on display until manually dismissed
 - The secret authenticates with Snarling (shared between plugin and display)
 
+**Answer length:** The voice subagent is prompted to reply in under 160 characters when possible, so answers fit the display's banner pages (Snarling renders ~190 chars across 3 pages without truncation).
+
 ## Transcription Models
 
 | Model | Latency | Cost (~10s utterance) | Quality | Best Use |
@@ -281,5 +283,5 @@ MIT
 ## Links
 
 - **GitHub**: https://github.com/snarflakes/OpenClaw-Voice-Bridge
-- **ClawHub**: https://clawhub.ai/skills/openclaw-voice-bridge
+- **ClawHub**: https://clawhub.ai/snarflakes/plugins/openclaw-voice-bridge
 - **Snarling Display**: https://github.com/snarflakes/snarling
