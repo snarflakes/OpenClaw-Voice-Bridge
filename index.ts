@@ -27,6 +27,8 @@ const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 
 // Cached API key to avoid re-resolving on every call
 let cachedApiKey: string | null = null;
+// Plugin-config API key fallback (set in register() from api.pluginConfig.apiKey)
+let configApiKey: string | null = null;
 
 // Helper: set snarling state via /state API
 async function setSnarlingState(state: string): Promise<void> {
@@ -88,13 +90,12 @@ async function resolveOpenAIKey(runtime: any): Promise<string | null> {
     }
   } catch (_e) {}
 
-  // Fallback: process.env
-  const envKey = process.env.OPENAI_API_KEY;
-  if (envKey) {
-    cachedApiKey = envKey;
-    console.info("[openclaw-voice-bridge] Resolved OpenAI key from process.env");
-    debugLog("Resolved key from process.env");
-    return envKey;
+  // Fallback: plugin config (apiKey) — no env var access
+  if (configApiKey) {
+    cachedApiKey = configApiKey;
+    console.info("[openclaw-voice-bridge] Resolved OpenAI key from plugin config");
+    debugLog("Resolved key from plugin config");
+    return configApiKey;
   }
 
   console.warn("[openclaw-voice-bridge] No OpenAI API key available");
@@ -164,6 +165,7 @@ export default definePluginEntry({
     const cfg = api.pluginConfig ?? {};
     DEBUG = cfg.debugEnabled === true;
     DEBUG_LOG = typeof cfg.debugLogPath === "string" && cfg.debugLogPath ? cfg.debugLogPath : "/tmp/voice-bridge-debug.log";
+    configApiKey = typeof cfg.apiKey === "string" && cfg.apiKey ? cfg.apiKey : null;
 
     console.info("[openclaw-voice-bridge] v3 registering, api keys:", Object.keys(api || {}));
     console.info("[openclaw-voice-bridge] api.runtime:", typeof api?.runtime, api?.runtime ? Object.keys(api.runtime) : 'null');
