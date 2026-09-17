@@ -3,7 +3,14 @@
   "name": "OpenClaw Voice Bridge",
   "description": "Receives WAV audio paths from snarling, transcribes via OpenAI, and injects the transcript into the agent session. Snarling owns recording; this plugin owns transcription and delivery.",
   "categories": ["voice"],
-  "envVars": ["OPENAI_API_KEY"],
+  "setup": {
+    "providers": [
+      {
+        "id": "openai",
+        "envVars": ["OPENAI_API_KEY"]
+      }
+    ]
+  },
   "contracts": {
     "tools": []
   },
@@ -15,6 +22,16 @@
         "type": "string",
         "description": "OpenAI transcription model (default: gpt-4o-mini-transcribe)",
         "default": "gpt-4o-mini-transcribe"
+      },
+      "debugEnabled": {
+        "type": "boolean",
+        "description": "Enable debug logging to debugLogPath (default: false)",
+        "default": false
+      },
+      "debugLogPath": {
+        "type": "string",
+        "description": "Debug log file path (default: /tmp/voice-bridge-debug.log)",
+        "default": "/tmp/voice-bridge-debug.log"
       }
     }
   }

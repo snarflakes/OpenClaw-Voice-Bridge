@@ -9,9 +9,9 @@ import { readFile } from "fs/promises";
 import { appendFileSync } from "fs";
 import { randomUUID } from "crypto";
 
-// Debug logging — opt-in via VOICE_BRIDGE_DEBUG env var
-const DEBUG = process.env.VOICE_BRIDGE_DEBUG === "1" || process.env.VOICE_BRIDGE_DEBUG === "true";
-const DEBUG_LOG = process.env.VOICE_BRIDGE_DEBUG_LOG || "/tmp/voice-bridge-debug.log";
+// Debug logging — opt-in via plugin config (debugEnabled / debugLogPath)
+let DEBUG = false;
+let DEBUG_LOG = "/tmp/voice-bridge-debug.log";
 function debugLog(msg: string): void {
   if (!DEBUG) return;
   const redacted = msg
@@ -160,6 +160,11 @@ export default definePluginEntry({
   name: "OpenClaw Voice Bridge",
   description: "Receives WAV audio paths from snarling, transcribes via OpenAI, and injects transcript into agent session",
   register(api: any) {
+    // Config-driven debug logging (was VOICE_BRIDGE_DEBUG / VOICE_BRIDGE_DEBUG_LOG env vars)
+    const cfg = api.pluginConfig ?? {};
+    DEBUG = cfg.debugEnabled === true;
+    DEBUG_LOG = typeof cfg.debugLogPath === "string" && cfg.debugLogPath ? cfg.debugLogPath : "/tmp/voice-bridge-debug.log";
+
     console.info("[openclaw-voice-bridge] v3 registering, api keys:", Object.keys(api || {}));
     console.info("[openclaw-voice-bridge] api.runtime:", typeof api?.runtime, api?.runtime ? Object.keys(api.runtime) : 'null');
 

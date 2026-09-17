@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Security-scan fix: debug toggles moved from env vars (`VOICE_BRIDGE_DEBUG` / `VOICE_BRIDGE_DEBUG_LOG`) to plugin config (`debugEnabled` / `debugLogPath`) — clears the `suspicious.env_credential_access` finding.
+- Manifest: `envVars` moved to the supported `setup.providers[].envVars` shape (clears the "unsupported top-level fields" warning).
+
 ## 1.2.1 (2026-09-17)
 
 - README: documented the 160-char answer limit; fixed the ClawHub link (skills path → plugins path).

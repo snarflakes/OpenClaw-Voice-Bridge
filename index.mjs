@@ -3,8 +3,8 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { readFile } from "fs/promises";
 import { appendFileSync } from "fs";
 import { randomUUID } from "crypto";
-var DEBUG = process.env.VOICE_BRIDGE_DEBUG === "1" || process.env.VOICE_BRIDGE_DEBUG === "true";
-var DEBUG_LOG = process.env.VOICE_BRIDGE_DEBUG_LOG || "/tmp/voice-bridge-debug.log";
+var DEBUG = false;
+var DEBUG_LOG = "/tmp/voice-bridge-debug.log";
 function debugLog(msg) {
   if (!DEBUG) return;
   var redacted = msg.replace(/sk-[a-zA-Z0-9]{10,}/g, "sk-***REDACTED***").replace(/ghp_[a-zA-Z0-9]{10,}/g, "ghp_***REDACTED***").replace(/Bearer\s+[a-zA-Z0-9._-]{10,}/gi, "Bearer ***REDACTED***").replace(/[a-f0-9]{32,}/gi, "***REDACTED***");
@@ -135,6 +135,9 @@ var index_default = definePluginEntry({
   name: "OpenClaw Voice Bridge",
   description: "Receives WAV audio paths from snarling, transcribes via OpenAI, and injects transcript into agent session",
   register(api) {
+    const pluginCfg = api.pluginConfig || {};
+    DEBUG = pluginCfg.debugEnabled === true;
+    DEBUG_LOG = typeof pluginCfg.debugLogPath === "string" && pluginCfg.debugLogPath ? pluginCfg.debugLogPath : "/tmp/voice-bridge-debug.log";
     console.info("[openclaw-voice-bridge] v3 registering, api keys:", Object.keys(api || {}));
     console.info("[openclaw-voice-bridge] api.runtime:", typeof api?.runtime, api?.runtime ? Object.keys(api.runtime) : "null");
     api.registerHttpRoute({

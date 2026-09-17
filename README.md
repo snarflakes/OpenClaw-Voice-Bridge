@@ -144,6 +144,8 @@ All config lives in `openclaw.json` under the `openclaw-voice-bridge.config` key
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `transcriptionModel` | string | `gpt-4o-mini-transcribe` | OpenAI transcription model |
+| `debugEnabled` | boolean | `false` | Enable debug logging to `debugLogPath` |
+| `debugLogPath` | string | `/tmp/voice-bridge-debug.log` | Debug log file path (used when `debugEnabled` is true) |
 
 Recording settings (duration, mic device) are controlled by Snarling, not the plugin, since Snarling owns the recording pipeline.
 
@@ -195,7 +197,7 @@ The subagent sends answers to the Snarling display using the `send_notification`
 
 ### Voice input reaches Snarling but no answer appears
 
-Check `/tmp/voice-bridge-debug.log` for the pipeline status:
+Check the debug log (enable via the `debugEnabled` config; file defaults to `debugLogPath`, `/tmp/voice-bridge-debug.log`) for the pipeline status:
 
 ```bash
 tail -20 /tmp/voice-bridge-debug.log
