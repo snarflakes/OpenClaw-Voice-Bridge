@@ -104,16 +104,20 @@ Updates come through the tracked install: `openclaw plugins update openclaw-voic
 
 > ⚠️ **`hooks.allowConversationAccess: true` is required** (v2026.5.18+). Without it, the plugin loads lazily and its HTTP routes are invisible to the gateway's HTTP server.
 
-### 3. Environment variables
+### 3. API key
 
-The plugin needs:
+The OpenAI key is resolved at runtime via OpenClaw's auth runtime (`api.runtime.modelAuth.resolveApiKeyForProvider`, with an `auth.resolveKey` fallback) — no environment variable or hardcoding is needed. Configure the OpenAI provider through OpenClaw's normal auth/setup flow.
 
-| Variable | Purpose |
-|----------|---------|
-| `OPENAI_API_KEY` | Transcription API access (resolved via OpenClaw auth runtime) |
+If your setup has no auth-configured OpenAI key, you can set one directly in the plugin config:
 
-
-The OpenAI key is resolved at runtime via `api.runtime.modelAuth.resolveApiKeyForProvider` — no need to hardcode it.
+```json
+{
+  "openclaw-voice-bridge": {
+    "enabled": true,
+    "config": { "apiKey": "sk-..." }
+  }
+}
+```
 
 ### 4. Verify your mic
 

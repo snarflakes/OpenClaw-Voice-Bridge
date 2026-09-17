@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.1 (2026-09-16)
+
+- Security-scan follow-up: removed the last env-var read (`OPENAI_API_KEY` fallback) — API key now resolves via the auth runtime, with an optional `apiKey` plugin-config fallback. Clears the remaining `suspicious.env_credential_access` finding.
+
 ## 1.3.0 (2026-09-16)
 
 - Security-scan fix: debug toggles moved from env vars (`VOICE_BRIDGE_DEBUG` / `VOICE_BRIDGE_DEBUG_LOG`) to plugin config (`debugEnabled` / `debugLogPath`) — clears the `suspicious.env_credential_access` finding.
