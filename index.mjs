@@ -1,18 +1,22 @@
-// index.ts
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { readFile } from "fs/promises";
 import { appendFileSync } from "fs";
 import { randomUUID } from "crypto";
-var DEBUG = false;
-var DEBUG_LOG = "/tmp/voice-bridge-debug.log";
+let DEBUG = false;
+let DEBUG_LOG = "/tmp/voice-bridge-debug.log";
 function debugLog(msg) {
   if (!DEBUG) return;
-  var redacted = msg.replace(/sk-[a-zA-Z0-9]{10,}/g, "sk-***REDACTED***").replace(/ghp_[a-zA-Z0-9]{10,}/g, "ghp_***REDACTED***").replace(/Bearer\s+[a-zA-Z0-9._-]{10,}/gi, "Bearer ***REDACTED***").replace(/[a-f0-9]{32,}/gi, "***REDACTED***");
-  try { appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${redacted}\n`); } catch {}
+  const redacted = msg.replace(/sk-[a-zA-Z0-9]{10,}/g, "sk-***REDACTED***").replace(/ghp_[a-zA-Z0-9]{10,}/g, "ghp_***REDACTED***").replace(/Bearer\s+[a-zA-Z0-9._-]{10,}/gi, "Bearer ***REDACTED***").replace(/[a-f0-9]{32,}/gi, "***REDACTED***");
+  try {
+    appendFileSync(DEBUG_LOG, `${(/* @__PURE__ */ new Date()).toISOString()} ${redacted}
+`);
+  } catch {
+  }
 }
-var DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
-var cachedApiKey = null;
-var configApiKey = null;
+const SNARLING_URL = "http://localhost:5000/state";
+const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+let cachedApiKey = null;
+let configApiKey = null;
 async function setSnarlingState(state) {
   try {
     const http = await import("http");
@@ -135,10 +139,10 @@ var index_default = definePluginEntry({
   name: "OpenClaw Voice Bridge",
   description: "Receives WAV audio paths from snarling, transcribes via OpenAI, and injects transcript into agent session",
   register(api) {
-    const pluginCfg = api.pluginConfig || {};
-    DEBUG = pluginCfg.debugEnabled === true;
-    DEBUG_LOG = typeof pluginCfg.debugLogPath === "string" && pluginCfg.debugLogPath ? pluginCfg.debugLogPath : "/tmp/voice-bridge-debug.log";
-    configApiKey = typeof pluginCfg.apiKey === "string" && pluginCfg.apiKey ? pluginCfg.apiKey : null;
+    const cfg = api.pluginConfig ?? {};
+    DEBUG = cfg.debugEnabled === true;
+    DEBUG_LOG = typeof cfg.debugLogPath === "string" && cfg.debugLogPath ? cfg.debugLogPath : "/tmp/voice-bridge-debug.log";
+    configApiKey = typeof cfg.apiKey === "string" && cfg.apiKey ? cfg.apiKey : null;
     console.info("[openclaw-voice-bridge] v3 registering, api keys:", Object.keys(api || {}));
     console.info("[openclaw-voice-bridge] api.runtime:", typeof api?.runtime, api?.runtime ? Object.keys(api.runtime) : "null");
     api.registerHttpRoute({
@@ -167,7 +171,7 @@ var index_default = definePluginEntry({
         debugLog(`/transcribe-and-reply wav_path=${wavPath}`);
         res.statusCode = 200;
         res.end(JSON.stringify({ status: "transcribing" }));
-        (async () => {
+        await (async () => {
           try {
             const apiKey = await resolveOpenAIKey(api.runtime);
             debugLog("API key resolved (redacted)");
@@ -193,16 +197,18 @@ var index_default = definePluginEntry({
               const subagent = api.runtime?.subagent;
               if (subagent?.run) {
                 const subagentPrompt = [
-                  "🎤 Voice input: " + transcript,
-                  "",
-                  "Answer using your full context. If you say you'll do something, do it in this turn — use your tools.",
-                  "Keep the Snarling display notification under 160 chars, but you can do more work after sending it.",
-                  "Send a notification to the Snarling display using send_notification (priority \"normal\") with your answer.",
+                  `You are a voice assistant. Snar just spoke into a device and said:`,
+                  `"${transcript}"`,
+                  ``,
+                  `Answer briefly and naturally (under 160 chars if possible).`,
+                  `Then send the answer to the Snarling display using the send_notification tool.`,
+                  `Call send_notification with your answer as the message and priority "normal".`
                 ].join("\n");
-                debugLog("Spawning subagent for voice input with full context");
+                debugLog("Spawning subagent for voice input");
                 const result = await subagent.run({
                   sessionKey,
-                  message: subagentPrompt
+                  message: subagentPrompt,
+                  lightContext: true
                 });
                 const runId = result?.runId ?? "unknown";
                 console.info(`[openclaw-voice-bridge] Subagent spawned: runId=${runId}`);
@@ -225,8 +231,8 @@ var index_default = definePluginEntry({
                   debugLog(`Enqueued into ${sessionKey} (fallback)`);
                 }
                 if (systemApi?.runHeartbeatOnce) {
-                  const result2 = await systemApi.runHeartbeatOnce({ heartbeat: { target: "last" } });
-                  debugLog(`runHeartbeatOnce: status=${result2?.status} (fallback)`);
+                  const result = await systemApi.runHeartbeatOnce({ heartbeat: { target: "last" } });
+                  debugLog(`runHeartbeatOnce: status=${result?.status} (fallback)`);
                 }
               }
             } catch (err) {
@@ -238,12 +244,7 @@ var index_default = definePluginEntry({
           } catch (err) {
             console.error(`[openclaw-voice-bridge] Error: ${err instanceof Error ? err.message : String(err)}`);
             debugLog(`ERROR: ${err instanceof Error ? err.message + " | " + err.stack : String(err)}`);
-            const errMsg = err instanceof Error ? err.message : String(err);
-            if (errMsg.includes("EAI_AGAIN") || errMsg.includes("ENETUNREACH") || errMsg.includes("fetch failed") || errMsg.includes("Transcription request failed")) {
-              await setSnarlingState("error");
-            } else {
-              await setSnarlingState("sleeping");
-            }
+            await setSnarlingState("sleeping");
           }
         })();
         return true;
