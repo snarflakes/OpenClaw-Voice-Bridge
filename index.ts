@@ -201,8 +201,9 @@ export default definePluginEntry({
       res.statusCode = 200;
       res.end(JSON.stringify({ status: "transcribing" }));
 
-      // Transcribe and inject — async
-      (async () => {
+      // Awaited inside the handler: 2026.10.5 retires the route runtime scope
+      // when the handler returns — deferred subagent.run aborts.
+      await (async () => {
         try {
           const apiKey = await resolveOpenAIKey(api.runtime);
           debugLog("API key resolved (redacted)");
