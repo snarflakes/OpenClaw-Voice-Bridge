@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2 (2026-11-22) — OpenClaw 2026.10.5 route-scope fix
+
+- **Fix for OpenClaw 2026.10.5+:** the voice pipeline (`transcribe` + `subagent.run`) is now awaited inside the `/transcribe-and-reply` route handler. 2026.10.5 retires the route runtime scope when the handler returns, which aborted the previously deferred async pipeline — B-button transcription silently died on current gateways.
+- Build metadata: `openclaw.build` bumped to 2026.10.5 (tested version).
+- README: compat note added for the 2026.10.5 behavior change.
+
 ## 1.3.1 (2026-09-16)
 
 - Security-scan follow-up: removed the last env-var read (`OPENAI_API_KEY` fallback) — API key now resolves via the auth runtime, with an optional `apiKey` plugin-config fallback. Clears the remaining `suspicious.env_credential_access` finding.
