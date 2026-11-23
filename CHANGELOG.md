@@ -3,6 +3,7 @@
 ## 1.3.2 (2026-11-22) — OpenClaw 2026.10.5 route-scope fix
 
 - **Fix for OpenClaw 2026.10.5+:** the voice pipeline (`transcribe` + `subagent.run`) is now awaited inside the `/transcribe-and-reply` route handler. 2026.10.5 retires the route runtime scope when the handler returns, which aborted the previously deferred async pipeline — B-button transcription silently died on current gateways.
+- **Audit hardening:** `/transcribe-and-reply` now enforces path containment — only `.wav` files under `allowedRecordDir` (new config key, default `/tmp`) are accepted; everything else returns 403. Closes the "endpoint can read any file path and upload it to OpenAI" finding in the ClawHub security audit. Verified with 6-case route-level tests (valid WAV, ssh-key path, passwd, traversal, non-wav, missing path).
 - Build metadata: `openclaw.build` bumped to 2026.10.5 (tested version).
 - README: compat note added for the 2026.10.5 behavior change.
 

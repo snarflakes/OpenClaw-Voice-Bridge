@@ -2,6 +2,8 @@
 
 Push-to-talk voice input for OpenClaw, triggered by a hardware button on the Snarling display. Records audio from a USB microphone, transcribes via OpenAI Whisper, and delivers the transcript to your agent — which answers and pushes the result back to the display.
 
+> **Security (v1.3.2):** the transcription endpoint only accepts `.wav` files under `allowedRecordDir` (plugin config, default `/tmp` — where Snarling writes recordings). Paths outside it are rejected with 403, so an authenticated caller can no longer make the plugin read an arbitrary local file and upload it to OpenAI. Point `allowedRecordDir` at your recording directory if you use a custom one.
+
 > **OpenClaw 2026.10.5+ compatibility (fixed in v1.3.2):** 2026.10.5 retires the route runtime scope when a route handler returns; the previously deferred async voice pipeline (`transcribe` + `subagent.run`) was aborted, silently breaking B/X-button transcription. v1.3.2 awaits the pipeline inside the handler. On 2026.10.5+ gateways, run `openclaw plugins update openclaw-voice-bridge` to get ≥ 1.3.2.
 
 ## How It Works

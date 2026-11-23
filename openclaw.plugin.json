@@ -29,6 +29,11 @@
         "type": "string",
         "description": "Optional OpenAI API key fallback, used when the OpenClaw auth runtime cannot resolve one. Leave empty to use the auth runtime only.",
         "default": ""
+      },
+      "allowedRecordDir": {
+        "type": "string",
+        "description": "Directory that /transcribe-and-reply accepts wav_path from, enforced by path containment. Set to where snarling writes voice recordings (default: /tmp).",
+        "default": "/tmp"
       }
     }
   }

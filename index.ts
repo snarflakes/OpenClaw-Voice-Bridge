@@ -8,6 +8,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { readFile } from "fs/promises";
 import { appendFileSync } from "fs";
 import { randomUUID } from "crypto";
+import { resolve as pathResolve, sep as pathSep } from "path";
 
 // Debug logging — opt-in via plugin config (debugEnabled / debugLogPath)
 let DEBUG = false;
@@ -29,6 +30,8 @@ const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 let cachedApiKey: string | null = null;
 // Plugin-config API key fallback (set in register() from api.pluginConfig.apiKey)
 let configApiKey: string | null = null;
+// Audit hardening: transcription endpoint only accepts .wav files under this dir
+let allowedRecordDir: string = "/tmp";
 
 // Helper: set snarling state via /state API
 async function setSnarlingState(state: string): Promise<void> {
@@ -166,6 +169,10 @@ export default definePluginEntry({
     DEBUG = cfg.debugEnabled === true;
     DEBUG_LOG = typeof cfg.debugLogPath === "string" && cfg.debugLogPath ? cfg.debugLogPath : "/tmp/voice-bridge-debug.log";
     configApiKey = typeof cfg.apiKey === "string" && cfg.apiKey ? cfg.apiKey : null;
+    // Audit hardening: constrain endpoint to the expected recording directory
+    // (default /tmp — where snarling writes voice recordings). Prevents
+    // arbitrary local-file reads being uploaded to OpenAI.
+    allowedRecordDir = typeof cfg.allowedRecordDir === "string" && cfg.allowedRecordDir ? cfg.allowedRecordDir : "/tmp";
 
     console.info("[openclaw-voice-bridge] v3 registering, api keys:", Object.keys(api || {}));
     console.info("[openclaw-voice-bridge] api.runtime:", typeof api?.runtime, api?.runtime ? Object.keys(api.runtime) : 'null');
@@ -192,6 +199,15 @@ export default definePluginEntry({
       if (!wavPath) {
         res.statusCode = 400;
         res.end(JSON.stringify({ error: "wav_path required" }));
+        return true;
+      }
+
+      // Path containment (audit hardening): only .wav files under allowedRecordDir.
+      const resolvedWav = pathResolve(String(wavPath));
+      const resolvedDir = pathResolve(allowedRecordDir) + pathSep;
+      if (!resolvedWav.startsWith(resolvedDir) || !resolvedWav.toLowerCase().endsWith(".wav")) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({ error: `wav_path must be a .wav file under ${allowedRecordDir}` }));
         return true;
       }
 
